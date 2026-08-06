@@ -160,3 +160,27 @@ func TestDiscoverReposSkipsNonexistentRoot(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+func TestDiscoverAllAppliesSkipToLaunchDirPass(t *testing.T) {
+	parent := t.TempDir()
+	initRepo(t, filepath.Join(parent, "keep"))
+	initRepo(t, filepath.Join(parent, ".nvm"))
+
+	// The launch-dir pass is always run; a skipped directory must not reappear
+	// just because cs happened to be launched from its parent.
+	got := names(DiscoverAll(parent, DiscoverOptions{Skip: []string{".nvm"}}))
+	if len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("expected skip to apply to the launch-dir pass, got %v", got)
+	}
+}
+
+func TestDiscoverAllDedupesAcrossPasses(t *testing.T) {
+	parent := t.TempDir()
+	initRepo(t, filepath.Join(parent, "argonath"))
+
+	// Same directory reachable from both the launch dir and a configured root.
+	got := DiscoverAll(parent, DiscoverOptions{Roots: []string{parent}, Depth: 1})
+	if len(got) != 1 {
+		t.Fatalf("expected one entry after dedupe, got %v", names(got))
+	}
+}

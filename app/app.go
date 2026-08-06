@@ -232,31 +232,12 @@ func (m *home) discoverRepos() []session.DiscoveredRepo {
 	}
 	m.discoveredReposLoaded = true
 
-	launchRoots := session.DiscoveryRoots(m.launchDir)
 	discovery := m.appConfig.Discovery
-
-	repos := session.DiscoverRepos(session.DiscoverOptions{Roots: launchRoots, Depth: 1})
-	seen := make(map[string]bool, len(repos))
-	for _, r := range repos {
-		seen[filepath.Clean(r.Path)] = true
-	}
-
-	for _, r := range session.DiscoverRepos(session.DiscoverOptions{
+	m.discoveredRepos = session.DiscoverAll(m.launchDir, session.DiscoverOptions{
 		Roots: discovery.Roots,
 		Depth: discovery.Depth,
 		Skip:  discovery.Skip,
-	}) {
-		clean := filepath.Clean(r.Path)
-		if seen[clean] {
-			continue
-		}
-		seen[clean] = true
-		repos = append(repos, r)
-	}
-
-	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
-
-	m.discoveredRepos = repos
+	})
 	return m.discoveredRepos
 }
 

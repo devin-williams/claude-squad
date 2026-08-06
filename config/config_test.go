@@ -331,3 +331,23 @@ func TestSaveConfig(t *testing.T) {
 		assert.Equal(t, testConfig.BranchPrefix, loadedConfig.BranchPrefix)
 	})
 }
+
+func TestLoadConfigDefaultsDiscoveryFieldsIndependently(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(ConfigHomeEnvVar, dir)
+	path := filepath.Join(dir, ConfigFileName)
+	if err := os.WriteFile(path, []byte(`{"discovery":{"roots":["~/code"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig()
+	if len(cfg.Discovery.Roots) != 1 || cfg.Discovery.Roots[0] != "~/code" {
+		t.Fatalf("roots not honored: %v", cfg.Discovery.Roots)
+	}
+	if cfg.Discovery.Depth != DefaultDiscoveryConfig().Depth {
+		t.Fatalf("depth should default, got %d", cfg.Discovery.Depth)
+	}
+	if len(cfg.Discovery.Skip) == 0 {
+		t.Fatal("skip should default when only roots is set")
+	}
+}

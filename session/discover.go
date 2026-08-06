@@ -52,6 +52,32 @@ func DiscoveryRoots(launchDir string) []string {
 	return roots
 }
 
+// DiscoverAll is the discovery the picker actually uses: the launch dir's roots
+// at depth 1, plus the configured roots at the configured depth, deduped. The
+// skip list applies to both passes — omitting it from either lets a skipped
+// directory reappear depending on where cs was launched.
+func DiscoverAll(launchDir string, opts DiscoverOptions) []DiscoveredRepo {
+	repos := DiscoverRepos(DiscoverOptions{
+		Roots: DiscoveryRoots(launchDir),
+		Depth: 1,
+		Skip:  opts.Skip,
+	})
+	seen := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		seen[filepath.Clean(r.Path)] = true
+	}
+	for _, r := range DiscoverRepos(opts) {
+		clean := filepath.Clean(r.Path)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		repos = append(repos, r)
+	}
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+	return repos
+}
+
 // expandRoot expands a leading "~" to the user's home directory.
 func expandRoot(root string) string {
 	if root == "~" {

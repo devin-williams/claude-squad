@@ -189,12 +189,11 @@ var (
 			if err == nil {
 				launchRoots := session.DiscoveryRoots(launchDir)
 				discovery := cfg.Discovery
-				repos := session.DiscoverRepos(session.DiscoverOptions{Roots: launchRoots, Depth: 1})
-				repos = append(repos, session.DiscoverRepos(session.DiscoverOptions{
+				repos := session.DiscoverAll(launchDir, session.DiscoverOptions{
 					Roots: discovery.Roots,
 					Depth: discovery.Depth,
 					Skip:  discovery.Skip,
-				})...)
+				})
 				fmt.Printf("\nDiscovery roots: %v\n", launchRoots)
 				fmt.Printf("Configured discovery roots: %v (depth %d, skip %v)\n", discovery.Roots, discovery.Depth, discovery.Skip)
 				fmt.Printf("Discovered repos (%d):\n", len(repos))

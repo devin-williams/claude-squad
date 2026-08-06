@@ -221,10 +221,17 @@ func LoadConfig() *Config {
 		return DefaultConfig()
 	}
 
-	// A config.json saved before Discovery existed unmarshals it as the zero
-	// value, so a stale file must still get the defaults.
-	if config.Discovery.Roots == nil && config.Discovery.Depth == 0 && config.Discovery.Skip == nil {
-		config.Discovery = DefaultDiscoveryConfig()
+	// Defaulted per field, not as a block: setting only `roots` must not silently
+	// discard the skip list.
+	defaults := DefaultDiscoveryConfig()
+	if config.Discovery.Roots == nil {
+		config.Discovery.Roots = defaults.Roots
+	}
+	if config.Discovery.Depth == 0 {
+		config.Discovery.Depth = defaults.Depth
+	}
+	if config.Discovery.Skip == nil {
+		config.Discovery.Skip = defaults.Skip
 	}
 
 	return &config
