@@ -262,8 +262,8 @@ func (w *TabbedWindow) String() string {
 		} else {
 			style = inactiveTabStyle
 		}
-		// In focus mode, label the active preview tab and tint it green.
-		if w.focused && isActive && i == PreviewTab {
+		// In focus mode, label the active input tab (preview or terminal) and tint it green.
+		if w.focused && isActive && (i == PreviewTab || i == TerminalTab) {
 			t = t + " ● input"
 			style = style.Foreground(focusColor)
 		}
@@ -334,9 +334,26 @@ func (w *TabbedWindow) renderSessionContext() string {
 
 // -- Focus mode: cursor and mouse selection ----------------------------------
 
-// SetShowCursor toggles rendering the session's cursor into the preview.
+// SetShowCursor toggles rendering the session's cursor into the preview and
+// terminal panes (only the active tab's pane actually renders it).
 func (w *TabbedWindow) SetShowCursor(show bool) {
 	w.preview.SetShowCursor(show)
+	if w.terminal != nil {
+		w.terminal.SetShowCursor(show)
+	}
+}
+
+// Terminal returns the terminal pane, used as a focus-mode target when the
+// terminal tab is focused.
+func (w *TabbedWindow) Terminal() *TerminalPane {
+	return w.terminal
+}
+
+// EnsureTerminalSession creates or reuses the terminal session for the given
+// instance without switching displayed content, so focus mode can be entered
+// on the terminal tab even before it has been viewed.
+func (w *TabbedWindow) EnsureTerminalSession(instance *session.Instance) error {
+	return w.terminal.EnsureSession(instance)
 }
 
 // previewContentTop is the row offset of preview content within this window's

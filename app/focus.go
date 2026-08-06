@@ -1,8 +1,27 @@
 package app
 
 import (
+	"claude-squad/session"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// focusTarget is anywhere focus-mode keystrokes and wheel scrolls can be
+// forwarded to: the selected instance's pane, or the terminal pane's session.
+type focusTarget interface {
+	SendKeys(keys string) error
+	SendWheel(up bool) error
+	Alive() bool
+}
+
+// instanceFocusTarget adapts *session.Instance to focusTarget.
+type instanceFocusTarget struct {
+	inst *session.Instance
+}
+
+func (t instanceFocusTarget) SendKeys(keys string) error { return t.inst.SendKeys(keys) }
+func (t instanceFocusTarget) SendWheel(up bool) error    { return t.inst.SendWheel(up) }
+func (t instanceFocusTarget) Alive() bool                { return t.inst.TmuxAlive() }
 
 // specialKeySequences maps bubbletea's special (negative) key types to the
 // ANSI escape sequences a terminal would send for them.

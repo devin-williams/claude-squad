@@ -38,6 +38,9 @@ type TerminalPane struct {
 
 	isScrolling bool
 	viewport    viewport.Model
+
+	// showCursor renders the session's cursor cell into the snapshot (focus mode).
+	showCursor bool
 }
 
 func NewTerminalPane() *TerminalPane {
@@ -103,6 +106,20 @@ func (t *TerminalPane) UpdateContent(instance *session.Instance) error {
 		return nil
 	}
 
+	// In focus mode, additionally render the session's cursor into the snapshot.
+	if t.showCursor {
+		content, cursorX, cursorY, cursorVisible, err := s.tmuxSession.CapturePaneContentAndCursor()
+		if err != nil {
+			return fmt.Errorf("terminal pane: failed to capture content: %w", err)
+		}
+		if cursorVisible {
+			content = OverlayCursor(content, cursorX, cursorY)
+		}
+		t.fallback = false
+		t.content = content
+		return nil
+	}
+
 	content, err := s.tmuxSession.CapturePaneContent()
 	if err != nil {
 		return fmt.Errorf("terminal pane: failed to capture content: %w", err)
@@ -113,14 +130,24 @@ func (t *TerminalPane) UpdateContent(instance *session.Instance) error {
 	return nil
 }
 
-// ensureSession creates or reuses a cached terminal tmux session for the given instance.
-func (t *TerminalPane) ensureSession(instance *session.Instance) error {
+// SetShowCursor toggles rendering the session's cursor into the terminal
+// snapshot (focus mode).
+func (t *TerminalPane) SetShowCursor(show bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.showCursor = show
+}
+
+// EnsureSession creates or reuses a cached terminal tmux session for the
+// given instance, without switching the displayed content. Used to lazily
+// create the terminal session before entering focus mode on the terminal tab.
+func (t *TerminalPane) EnsureSession(instance *session.Instance) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.ensureSessionLocked(instance)
 }
 
-// ensureSessionLocked is the lock-free implementation of ensureSession.
+// ensureSessionLocked is the lock-free implementation of EnsureSession.
 // Caller must hold t.mu.
 func (t *TerminalPane) ensureSessionLocked(instance *session.Instance) error {
 	if instance == nil || !instance.Started() || instance.Status == session.Paused {
@@ -359,4 +386,34 @@ func (t *TerminalPane) IsScrolling() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.isScrolling
+}
+
+// SendKeys sends keys to the current terminal session's tmux pane, for focus mode.
+func (t *TerminalPane) SendKeys(keys string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s, ok := t.sessions[t.currentTitle]
+	if !ok || s.tmuxSession == nil || !s.tmuxSession.DoesSessionExist() {
+		return fmt.Errorf("terminal pane: no session to send keys to")
+	}
+	return s.tmuxSession.SendKeys(keys)
+}
+
+// SendWheel forwards a mouse-wheel scroll to the current terminal session,
+// mirroring session.Instance.SendWheel: alt-screen apps scroll their own
+// transcript rather than the pane's scroll mode.
+func (t *TerminalPane) SendWheel(up bool) error {
+	button := 65
+	if up {
+		button = 64
+	}
+	return t.SendKeys(fmt.Sprintf("\x1b[<%d;1;1M", button))
+}
+
+// Alive reports whether the current terminal session's tmux session exists.
+func (t *TerminalPane) Alive() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s, ok := t.sessions[t.currentTitle]
+	return ok && s.tmuxSession != nil && s.tmuxSession.DoesSessionExist()
 }

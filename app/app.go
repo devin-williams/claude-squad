@@ -141,6 +141,11 @@ type home struct {
 
 	metadataTick uint64
 
+	// focusTarget is where focus-mode keystrokes and wheel scrolls go: the
+	// selected instance's pane, or the terminal pane's session. Set on
+	// enterFocusMode, cleared on exitFocusMode.
+	focusTarget focusTarget
+
 	// previewOriginX is the screen column where the tabbed window block starts,
 	// measured in View so mouse selection maps window-relative coordinates back
 	// to preview content cells.
@@ -463,12 +468,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// In focus mode, forward the wheel to the session (like when
+			// In focus mode, forward the wheel to the focus target (like when
 			// attached): alt-screen apps such as Claude Code scroll their own
 			// transcript — tmux keeps no scrollback for them. The preview
 			// mirrors the result.
-			if m.state == stateFocus && selected.TmuxAlive() {
-				if err := selected.SendWheel(msg.Button == tea.MouseButtonWheelUp); err != nil {
+			if m.state == stateFocus && m.focusTarget != nil && m.focusTarget.Alive() {
+				if err := m.focusTarget.SendWheel(msg.Button == tea.MouseButtonWheelUp); err != nil {
 					return m, tea.Batch(m.exitFocusMode(), m.handleError(err))
 				}
 				return m, nil
@@ -1007,7 +1012,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
 			return m, nil
 		}
-		if !m.tabbedWindow.IsInPreviewTab() {
+		if !m.tabbedWindow.IsInPreviewTab() && !m.tabbedWindow.IsInTerminalTab() {
 			return m, nil
 		}
 		return m.enterFocusMode(selected)
@@ -1016,8 +1021,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil {
 			return m, nil
 		}
-		// Enter types into the preview rather than taking over the terminal; o still attaches.
-		if m.tabbedWindow.IsInPreviewTab() {
+		// Enter types into the preview/terminal rather than taking over the
+		// terminal; o still attaches.
+		if m.tabbedWindow.IsInPreviewTab() || m.tabbedWindow.IsInTerminalTab() {
 			return m.enterFocusMode(selected)
 		}
 		return m.attachSelected()
@@ -1070,17 +1076,33 @@ func (m *home) attachSelected() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// enterFocusMode switches to focus mode: keystrokes go to the selected session.
+// enterFocusMode switches to focus mode: keystrokes go to the selected
+// session's pane, or to the terminal pane's session if the terminal tab is
+// active.
 func (m *home) enterFocusMode(selected *session.Instance) (tea.Model, tea.Cmd) {
 	m.state = stateFocus
 	m.menu.SetState(ui.StateFocus)
 	m.tabbedWindow.SetFocused(true)
 	m.tabbedWindow.SetShowCursor(true)
-	// Snap the preview to the live view so keystrokes are visible.
-	if m.tabbedWindow.IsPreviewInScrollMode() {
-		if err := m.tabbedWindow.ResetPreviewToNormalMode(selected); err != nil {
-			log.ErrorLog.Print(err)
+
+	if m.tabbedWindow.IsInTerminalTab() {
+		// The terminal tab lazily creates its session; make sure it exists
+		// before handing it focus.
+		if err := m.tabbedWindow.EnsureTerminalSession(selected); err != nil {
+			return m, m.handleError(err)
 		}
+		if m.tabbedWindow.IsTerminalInScrollMode() {
+			m.tabbedWindow.ResetTerminalToNormalMode()
+		}
+		m.focusTarget = m.tabbedWindow.Terminal()
+	} else {
+		// Snap the preview to the live view so keystrokes are visible.
+		if m.tabbedWindow.IsPreviewInScrollMode() {
+			if err := m.tabbedWindow.ResetPreviewToNormalMode(selected); err != nil {
+				log.ErrorLog.Print(err)
+			}
+		}
+		m.focusTarget = instanceFocusTarget{selected}
 	}
 	return m, m.instanceChanged()
 }
@@ -1091,10 +1113,11 @@ func (m *home) exitFocusMode() tea.Cmd {
 	m.menu.SetState(ui.StateDefault)
 	m.tabbedWindow.SetFocused(false)
 	m.tabbedWindow.SetShowCursor(false)
+	m.focusTarget = nil
 	return m.instanceChanged()
 }
 
-// handleFocusState forwards keystrokes to the selected session while in focus
+// handleFocusState forwards keystrokes to the focus target while in focus
 // mode. Exit is ctrl+q or ctrl+space; esc is deliberately forwarded (agents
 // use it to interrupt), so it is not an exit key.
 func (m *home) handleFocusState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1105,7 +1128,7 @@ func (m *home) handleFocusState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	selected := m.list.GetSelectedInstance()
-	if selected == nil || selected.Paused() || !selected.TmuxAlive() {
+	if selected == nil || selected.Paused() || m.focusTarget == nil || !m.focusTarget.Alive() {
 		return m, m.exitFocusMode()
 	}
 
@@ -1113,7 +1136,7 @@ func (m *home) handleFocusState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Code scrolls its own transcript (alt-screen apps have no tmux scrollback
 	// to snapshot).
 	if msg.String() == "shift+up" || msg.String() == "shift+down" {
-		if err := selected.SendWheel(msg.String() == "shift+up"); err != nil {
+		if err := m.focusTarget.SendWheel(msg.String() == "shift+up"); err != nil {
 			return m, tea.Batch(m.exitFocusMode(), m.handleError(err))
 		}
 		return m, m.instanceChanged()
@@ -1123,7 +1146,7 @@ func (m *home) handleFocusState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(data) == 0 {
 		return m, nil
 	}
-	if err := selected.SendKeys(string(data)); err != nil {
+	if err := m.focusTarget.SendKeys(string(data)); err != nil {
 		return m, tea.Batch(m.exitFocusMode(), m.handleError(err))
 	}
 	return m, m.instanceChanged()
