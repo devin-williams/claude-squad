@@ -3,6 +3,7 @@ package ui
 import (
 	"claude-squad/session"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -14,6 +15,18 @@ var (
 	DeletionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
 	HunkStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#0ea5e9"))
 )
+
+// homeShorten replaces the user's home directory prefix with "~" for display.
+func homeShorten(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if rest, ok := strings.CutPrefix(path, home); ok {
+		return "~" + rest
+	}
+	return path
+}
 
 type DiffPane struct {
 	viewport viewport.Model
@@ -51,6 +64,18 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 
 	if instance == nil || !instance.Started() {
 		d.viewport.SetContent(centeredFallbackMessage)
+		return
+	}
+
+	if instance.InPlace {
+		centeredMessage := lipgloss.Place(
+			d.width,
+			d.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			fmt.Sprintf("No diff available — this session edits %s in place (no git worktree).\nReview changes in your own shell.", homeShorten(instance.Path)),
+		)
+		d.viewport.SetContent(centeredMessage)
 		return
 	}
 

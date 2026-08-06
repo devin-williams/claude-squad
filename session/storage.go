@@ -21,6 +21,7 @@ type InstanceData struct {
 	WorkspaceID string    `json:"workspace_id,omitempty"`
 	ProfileName string    `json:"profile_name,omitempty"`
 	SubDir      string    `json:"sub_dir,omitempty"`
+	InPlace     bool      `json:"in_place,omitempty"`
 
 	Program   string          `json:"program"`
 	Worktree  GitWorktreeData `json:"worktree"`

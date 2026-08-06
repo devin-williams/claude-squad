@@ -61,6 +61,10 @@ type Instance struct {
 	// SubDir is the path, relative to the worktree root, the agent should start
 	// in. Empty means the worktree root itself.
 	SubDir string
+	// InPlace is true if this instance runs directly in Path with no worktree,
+	// no branch, and no isolation. gitWorktree stays nil for its entire
+	// lifetime, which is what makes teardown and Pause/Resume safe to refuse.
+	InPlace bool
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -93,6 +97,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		WorkspaceID: i.WorkspaceID,
 		ProfileName: i.ProfileName,
 		SubDir:      i.SubDir,
+		InPlace:     i.InPlace,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -134,19 +139,23 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		WorkspaceID: data.WorkspaceID,
 		ProfileName: data.ProfileName,
 		SubDir:      data.SubDir,
-		gitWorktree: git.NewGitWorktreeFromStorage(
+		InPlace:     data.InPlace,
+		diffStats: &git.DiffStats{
+			Added:   data.DiffStats.Added,
+			Removed: data.DiffStats.Removed,
+			Content: data.DiffStats.Content,
+		},
+	}
+
+	if !data.InPlace {
+		instance.gitWorktree = git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
 			data.Worktree.SessionName,
 			data.Worktree.BranchName,
 			data.Worktree.BaseCommitSHA,
 			data.Worktree.IsExistingBranch,
-		),
-		diffStats: &git.DiffStats{
-			Added:   data.DiffStats.Added,
-			Removed: data.DiffStats.Removed,
-			Content: data.DiffStats.Content,
-		},
+		)
 	}
 
 	if instance.Paused() {
@@ -209,6 +218,9 @@ func (i *Instance) RepoName() (string, error) {
 	if !i.started {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
 	}
+	if i.InPlace {
+		return filepath.Base(i.Path), nil
+	}
 	return i.gitWorktree.GetRepoName(), nil
 }
 
@@ -238,6 +250,15 @@ func (i *Instance) tmuxWorkDir() string {
 	return root
 }
 
+// WorkingDir returns the directory tmux should start in: the worktree (respecting
+// SubDir) for a normal instance, or i.Path itself for an in-place instance.
+func (i *Instance) WorkingDir() string {
+	if i.InPlace {
+		return i.Path
+	}
+	return i.tmuxWorkDir()
+}
+
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
 func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
@@ -254,7 +275,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	}
 	i.tmuxSession = tmuxSession
 
-	if firstTimeSetup {
+	if firstTimeSetup && !i.InPlace {
 		if i.selectedBranch != "" {
 			gitWorktree, err := git.NewGitWorktreeFromBranch(i.Path, i.selectedBranch, i.Title, i.WorkspaceID)
 			if err != nil {
@@ -290,6 +311,19 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			setupErr = fmt.Errorf("failed to restore existing session: %w", err)
 			return setupErr
 		}
+	} else if i.InPlace {
+		log.WarningLog.Printf("post-worktree hook skipped for in-place instance %s: no git worktree", i.Title)
+
+		env, err := i.resolveEnv()
+		if err != nil {
+			setupErr = fmt.Errorf("failed to resolve env: %w", err)
+			return setupErr
+		}
+
+		if err := i.tmuxSession.Start(i.WorkingDir(), env); err != nil {
+			setupErr = fmt.Errorf("failed to start new session: %w", err)
+			return setupErr
+		}
 	} else {
 		// Setup git worktree first
 		if err := i.gitWorktree.Setup(); err != nil {
@@ -317,7 +351,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 
 		// Create new session
-		if err := i.tmuxSession.Start(i.tmuxWorkDir(), env); err != nil {
+		if err := i.tmuxSession.Start(i.WorkingDir(), env); err != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
@@ -433,10 +467,18 @@ func (i *Instance) GetGitWorktree() (*git.GitWorktree, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot get git worktree for instance that has not been started")
 	}
+	if i.InPlace {
+		return nil, fmt.Errorf("instance %s is in-place and has no git worktree", i.Title)
+	}
 	return i.gitWorktree, nil
 }
 
-// GetWorktreePath returns the worktree path for the instance, or empty string if unavailable
+// GetWorktreePath returns the git worktree path for the instance, or empty
+// string if unavailable. This deliberately never returns i.Path for an
+// in-place instance — callers that need "wherever this instance's files live"
+// should use WorkingDir instead. Keeping the two meanings separate is what
+// stops an in-place session's real directory from ever reaching a worktree-only
+// code path.
 func (i *Instance) GetWorktreePath() string {
 	if i.gitWorktree == nil {
 		return ""
@@ -474,6 +516,9 @@ func (i *Instance) Pause() error {
 	}
 	if i.Status == Paused {
 		return fmt.Errorf("instance is already paused")
+	}
+	if i.InPlace {
+		return fmt.Errorf("cannot pause an in-place instance: no worktree to remove")
 	}
 
 	var errs []error
@@ -565,6 +610,9 @@ func (i *Instance) Resume() error {
 	if i.Status != Paused {
 		return fmt.Errorf("can only resume paused instances")
 	}
+	if i.InPlace {
+		return fmt.Errorf("cannot resume an in-place instance: no worktree to recreate")
+	}
 
 	// Check if branch is checked out
 	if checked, err := i.gitWorktree.IsBranchCheckedOut(); err != nil {
@@ -592,7 +640,7 @@ func (i *Instance) Resume() error {
 		if err := i.tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Print(err)
 			// If restore fails, fall back to creating new session
-			if err := i.tmuxSession.Start(i.tmuxWorkDir(), env); err != nil {
+			if err := i.tmuxSession.Start(i.WorkingDir(), env); err != nil {
 				log.ErrorLog.Print(err)
 				// Cleanup git worktree if tmux session creation fails
 				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
@@ -604,7 +652,7 @@ func (i *Instance) Resume() error {
 		}
 	} else {
 		// Create new tmux session
-		if err := i.tmuxSession.Start(i.tmuxWorkDir(), env); err != nil {
+		if err := i.tmuxSession.Start(i.WorkingDir(), env); err != nil {
 			log.ErrorLog.Print(err)
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
@@ -631,6 +679,11 @@ func (i *Instance) UpdateDiffStats() error {
 		return nil
 	}
 
+	if i.InPlace {
+		i.diffStats = nil
+		return nil
+	}
+
 	stats := i.gitWorktree.Diff()
 	if stats.Error != nil {
 		if strings.Contains(stats.Error.Error(), "base commit SHA not set") {
@@ -648,7 +701,7 @@ func (i *Instance) UpdateDiffStats() error {
 // ComputeDiff runs the expensive git diff I/O and returns the result without
 // mutating instance state. Safe to call from a background goroutine.
 func (i *Instance) ComputeDiff() *git.DiffStats {
-	if !i.started || i.Status == Paused {
+	if !i.started || i.Status == Paused || i.InPlace {
 		return nil
 	}
 	return i.gitWorktree.Diff()
@@ -659,7 +712,7 @@ func (i *Instance) ComputeDiff() *git.DiffStats {
 // background goroutine. Use this for instances whose full diff content is not
 // currently needed so we avoid keeping large diffs in memory.
 func (i *Instance) ComputeDiffNumstat() *git.DiffStats {
-	if !i.started || i.Status == Paused {
+	if !i.started || i.Status == Paused || i.InPlace {
 		return nil
 	}
 	return i.gitWorktree.DiffNumstat()

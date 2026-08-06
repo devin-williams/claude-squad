@@ -143,6 +143,9 @@ var (
 
 			repoPaths := make([]string, 0, len(reg.Workspaces))
 			for _, w := range reg.Workspaces {
+				if w.NonGit {
+					continue
+				}
 				repoPaths = append(repoPaths, w.RepoPath)
 			}
 			if err := git.CleanupWorktrees(repoPaths); err != nil {
