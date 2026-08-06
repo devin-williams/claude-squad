@@ -23,7 +23,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const GlobalInstanceLimit = 10
+const GlobalInstanceLimit = 50
 
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool, workspaceID string) error {
@@ -108,6 +108,8 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+
+	metadataTick uint64
 }
 
 // nextWorkspace returns the workspace that should follow the currently-active one
@@ -424,7 +426,7 @@ func (m *home) Init() tea.Cmd {
 			time.Sleep(100 * time.Millisecond)
 			return previewTickMsg{}
 		},
-		tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance()),
+		tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance(), m.metadataTick),
 	)
 }
 
@@ -483,6 +485,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				r.instance.SetStatus(session.Ready)
 			}
+			if !r.diffComputed {
+				// Throttled tick for a non-selected instance: leave its last diff stats in place.
+				continue
+			}
 			if r.diffStats != nil && r.diffStats.Error != nil {
 				if !strings.Contains(r.diffStats.Error.Error(), "base commit SHA not set") {
 					log.WarningLog.Printf("could not update diff stats: %v", r.diffStats.Error)
@@ -492,7 +498,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.instance.SetDiffStats(r.diffStats)
 			}
 		}
-		return m, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance())
+		m.metadataTick++
+		return m, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance(), m.metadataTick)
 	case tea.MouseMsg:
 		// Handle mouse wheel events for scrolling the diff/preview pane
 		if msg.Action == tea.MouseActionPress {
@@ -1206,6 +1213,8 @@ type instanceMetaResult struct {
 	updated   bool
 	hasPrompt bool
 	diffStats *git.DiffStats
+	// False on a throttled tick, so the consumer leaves the last stats in place instead of clearing them.
+	diffComputed bool
 }
 
 // metadataUpdateDoneMsg is sent when the background metadata update completes.
@@ -1241,16 +1250,15 @@ func (m *home) snapshotActiveInstances() []*session.Instance {
 	return out
 }
 
+// Diff and DiffNumstat both do a `git add -N .` index write, so at high instance counts the diff is throttled while the cheap tmux capture is not.
+const metadataDiffThrottle = 8
+
 // tickUpdateMetadataCmd returns a self-chaining Cmd that sleeps 500ms, then performs
 // expensive metadata I/O (tmux capture, git diff) in parallel background goroutines.
 // Because it only re-schedules after completing, overlapping ticks are impossible.
 // The active instances slice should be snapshotted on the main thread via
 // snapshotActiveInstances() before being passed here.
-//
-// Only the selected instance gets a full diff (with Content); the rest get a
-// lightweight numstat-only summary. This keeps per-instance memory bounded
-// since the diff pane only ever renders the selected one.
-func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instance) tea.Cmd {
+func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instance, tick uint64) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(500 * time.Millisecond)
 
@@ -1269,8 +1277,10 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 				r.updated, r.hasPrompt = instance.HasUpdated()
 				if instance == selected {
 					r.diffStats = instance.ComputeDiff()
-				} else {
+					r.diffComputed = true
+				} else if tick%metadataDiffThrottle == 0 {
 					r.diffStats = instance.ComputeDiffNumstat()
+					r.diffComputed = true
 				}
 			}(idx, inst)
 		}

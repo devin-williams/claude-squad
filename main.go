@@ -136,13 +136,17 @@ var (
 			}
 			fmt.Println("Tmux sessions have been cleaned up")
 
-			if err := git.CleanupWorktrees(); err != nil {
+			reg := config.LoadWorkspaceRegistry()
+
+			repoPaths := make([]string, 0, len(reg.Workspaces))
+			for _, w := range reg.Workspaces {
+				repoPaths = append(repoPaths, w.RepoPath)
+			}
+			if err := git.CleanupWorktrees(repoPaths); err != nil {
 				return fmt.Errorf("failed to cleanup worktrees: %w", err)
 			}
 			fmt.Println("Worktrees have been cleaned up")
 
-			// Kill all per-workspace daemons and any legacy daemon.
-			reg := config.LoadWorkspaceRegistry()
 			for _, w := range reg.Workspaces {
 				if err := daemon.StopDaemon(w.ID); err != nil {
 					log.WarningLog.Printf("failed to stop daemon for workspace %s: %v", w.ID, err)
