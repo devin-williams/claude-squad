@@ -1196,8 +1196,7 @@ func (m *home) scheduleBranchSearch(filter string, version uint64) tea.Cmd {
 // runBranchSearch returns a tea.Cmd that performs the git search in the background.
 func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
 	return func() tea.Msg {
-		currentDir, _ := os.Getwd()
-		branches, err := git.SearchBranches(currentDir, filter)
+		branches, err := git.SearchBranches(m.sessionPath(), filter)
 		if err != nil {
 			log.WarningLog.Printf("branch search failed: %v", err)
 			return nil

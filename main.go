@@ -90,7 +90,12 @@ var (
 			if autoYesFlag {
 				autoYes = true
 			}
-			if autoYes {
+			var wsID string
+			if workspace != nil {
+				wsID = workspace.ID
+			}
+
+			if autoYes && workspace != nil {
 				defer func() {
 					if err := daemon.LaunchDaemon(workspace.ID); err != nil {
 						log.ErrorLog.Printf("failed to launch daemon: %v", err)
@@ -99,16 +104,13 @@ var (
 			}
 			// Kill this workspace's daemon if one is running, plus any legacy
 			// pre-workspace daemon left over from before the upgrade.
-			if err := daemon.StopDaemon(workspace.ID); err != nil {
-				log.ErrorLog.Printf("failed to stop daemon: %v", err)
+			if workspace != nil {
+				if err := daemon.StopDaemon(workspace.ID); err != nil {
+					log.ErrorLog.Printf("failed to stop daemon: %v", err)
+				}
 			}
 			if err := daemon.StopLegacyDaemon(); err != nil {
 				log.WarningLog.Printf("failed to stop legacy daemon: %v", err)
-			}
-
-			var wsID string
-			if workspace != nil {
-				wsID = workspace.ID
 			}
 			return app.Run(ctx, program, autoYes, wsID)
 		},

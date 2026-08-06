@@ -39,6 +39,10 @@ func (g *GitWorktree) Setup() error {
 func (g *GitWorktree) setupFromExistingBranch() error {
 	// Directory already created in Setup(), skip duplicate creation
 
+	if err := guardDestructive(g.worktreePath); err != nil {
+		log.ErrorLog.Printf("setupFromExistingBranch: %v", err)
+		return err
+	}
 	// Clean up any existing worktree first
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
 	// If the directory is still there (orphaned, not registered with git), drop it so `git worktree add` won't fail.
@@ -81,13 +85,19 @@ func (g *GitWorktree) recordBaseCommit() error {
 
 // setupNewWorktree creates a new worktree from HEAD
 func (g *GitWorktree) setupNewWorktree() error {
+	if err := guardDestructive(g.worktreePath); err != nil {
+		log.ErrorLog.Printf("setupNewWorktree: %v", err)
+		return err
+	}
 	// Clean up any existing worktree first
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
 	// If the directory is still there (orphaned, not registered with git), drop it so `git worktree add` won't fail.
 	_ = os.RemoveAll(g.worktreePath)
 
 	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
-	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
+	if g.branchName != "" {
+		_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
+	}
 
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
@@ -116,6 +126,11 @@ func (g *GitWorktree) setupNewWorktree() error {
 func (g *GitWorktree) Cleanup() error {
 	var errs []error
 
+	if err := guardDestructive(g.worktreePath); err != nil {
+		log.ErrorLog.Printf("Cleanup: %v", err)
+		return err
+	}
+
 	// Check if worktree path exists before attempting removal
 	if _, err := os.Stat(g.worktreePath); err == nil {
 		// Remove the worktree using git command
@@ -128,7 +143,7 @@ func (g *GitWorktree) Cleanup() error {
 	}
 
 	// Delete the branch using git CLI, but skip if this is a pre-existing branch
-	if !g.isExistingBranch {
+	if !g.isExistingBranch && g.branchName != "" {
 		if _, err := g.runGitCommand(g.repoPath, "branch", "-D", g.branchName); err != nil {
 			// Only log if it's not a "branch not found" error
 			if !strings.Contains(err.Error(), "not found") {
@@ -151,6 +166,10 @@ func (g *GitWorktree) Cleanup() error {
 
 // Remove removes the worktree but keeps the branch
 func (g *GitWorktree) Remove() error {
+	if err := guardDestructive(g.worktreePath); err != nil {
+		log.ErrorLog.Printf("Remove: %v", err)
+		return err
+	}
 	// Remove the worktree using git command
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath); err != nil {
 		return fmt.Errorf("failed to remove worktree: %w", err)
@@ -216,18 +235,25 @@ func CleanupWorktrees(repoPaths []string) error {
 			continue
 		}
 		worktreePath := filepath.Join(worktreesDir, entry.Name())
+		cleanedWorktreePath := filepath.Clean(worktreePath)
 
 		for path, owner := range worktreeOwners {
-			if strings.Contains(path, entry.Name()) {
-				deleteCmd := exec.Command("git", "-C", owner.repoPath, "branch", "-D", owner.branch)
-				if err := deleteCmd.Run(); err != nil {
-					log.ErrorLog.Printf("failed to delete branch %s in %s: %v", owner.branch, owner.repoPath, err)
+			if filepath.Clean(path) == cleanedWorktreePath {
+				if owner.branch != "" {
+					deleteCmd := exec.Command("git", "-C", owner.repoPath, "branch", "-D", owner.branch)
+					if err := deleteCmd.Run(); err != nil {
+						log.ErrorLog.Printf("failed to delete branch %s in %s: %v", owner.branch, owner.repoPath, err)
+					}
 				}
 				prunedRepos[owner.repoPath] = true
 				break
 			}
 		}
 
+		if err := guardDestructive(worktreePath); err != nil {
+			log.ErrorLog.Printf("CleanupWorktrees: %v", err)
+			continue
+		}
 		os.RemoveAll(worktreePath)
 	}
 
