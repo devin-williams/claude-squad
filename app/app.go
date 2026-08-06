@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -194,12 +195,25 @@ func (m *home) workspacePickerItems() []overlay.WorkspaceItem {
 	})
 
 	items := make([]overlay.WorkspaceItem, 0, len(workspaces))
+	seen := make(map[string]bool)
 	for _, ws := range workspaces {
 		items = append(items, overlay.WorkspaceItem{
 			Label:    ws.DisplayName,
 			Path:     ws.RepoPath,
 			Kind:     overlay.KindRegistered,
 			Existing: true,
+		})
+		seen[filepath.Clean(ws.RepoPath)] = true
+	}
+
+	for _, repo := range session.DiscoverRepos(session.DiscoveryRoots(m.launchDir)) {
+		if seen[filepath.Clean(repo.Path)] {
+			continue
+		}
+		items = append(items, overlay.WorkspaceItem{
+			Label: repo.Name,
+			Path:  repo.Path,
+			Kind:  overlay.KindRepoRoot,
 		})
 	}
 	return items

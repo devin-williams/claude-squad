@@ -185,6 +185,17 @@ var (
 				fmt.Printf("  %s\n", w.String())
 			}
 
+			launchDir, err := filepath.Abs(".")
+			if err == nil {
+				roots := session.DiscoveryRoots(launchDir)
+				repos := session.DiscoverRepos(roots)
+				fmt.Printf("\nDiscovery roots: %v\n", roots)
+				fmt.Printf("Discovered repos (%d):\n", len(repos))
+				for _, r := range repos {
+					fmt.Printf("  %s\t%s\n", r.Name, r.Path)
+				}
+			}
+
 			currentDir, err := filepath.Abs(".")
 			if err == nil && git.IsGitRepo(currentDir) {
 				ws, err := resolveOrRegisterWorkspace(reg, currentDir)
