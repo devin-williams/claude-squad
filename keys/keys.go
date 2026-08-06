@@ -40,6 +40,9 @@ const (
 	// KeyFocus enters focus mode: keystrokes are forwarded to the selected
 	// session from the preview, without a full attach.
 	KeyFocus
+	// KeyAttach takes over the whole terminal with the selected session, which
+	// enter no longer does now that it focuses the preview instead.
+	KeyAttach
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -54,7 +57,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"K":          KeyMoveUp,
 	"N":          KeyPrompt,
 	"enter":      KeyEnter,
-	"o":          KeyEnter,
+	"o":          KeyAttach,
 	"n":          KeyNew,
 	"D":          KeyKill,
 	"q":          KeyQuit,
@@ -87,8 +90,12 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithHelp("shift+↓", "scroll"),
 	),
 	KeyEnter: key.NewBinding(
-		key.WithKeys("enter", "o"),
-		key.WithHelp("↵/o", "open"),
+		key.WithKeys("enter"),
+		key.WithHelp("↵", "type here"),
+	),
+	KeyAttach: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "attach"),
 	),
 	KeyNew: key.NewBinding(
 		key.WithKeys("n"),

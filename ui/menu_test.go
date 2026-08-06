@@ -21,7 +21,7 @@ func TestMenuFocusStateShowsHint(t *testing.T) {
 	assert.NotContains(t, out, "push branch")
 }
 
-func TestMenuDefaultShowsFocusKey(t *testing.T) {
+func TestMenuDefaultAdvertisesEnterAndAttach(t *testing.T) {
 	m := NewMenu()
 	m.SetSize(240, 1)
 	inst, err := session.NewInstance(session.InstanceOptions{
@@ -33,7 +33,11 @@ func TestMenuDefaultShowsFocusKey(t *testing.T) {
 	m.SetInstance(inst) // drives the default (non-empty) option layout
 
 	out := stripANSI(m.String())
-	assert.Contains(t, out, "f focus")
+	// Enter types into the preview and o attaches, so the menu must not still
+	// advertise f as the way to reach the session.
+	assert.Contains(t, out, "type here")
+	assert.Contains(t, out, "o attach")
+	assert.NotContains(t, out, "f focus")
 }
 
 // stripANSI removes escape sequences so assertions match on visible text.

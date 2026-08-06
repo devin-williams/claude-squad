@@ -83,6 +83,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyKill:              menuGroupInstance,
 	keys.KeyEnter:             menuGroupAction,
 	keys.KeyFocus:             menuGroupAction,
+	keys.KeyAttach:            menuGroupAction,
 	keys.KeySubmit:            menuGroupAction,
 	keys.KeyResume:            menuGroupAction,
 	keys.KeyCheckout:          menuGroupAction,
@@ -173,7 +174,7 @@ func (m *Menu) addInstanceOptions() {
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter}
 	if m.instance.Status != session.Paused {
-		actionGroup = append(actionGroup, keys.KeyFocus)
+		actionGroup = append(actionGroup, keys.KeyAttach)
 	}
 	if !m.instance.InPlace {
 		actionGroup = append(actionGroup, keys.KeySubmit)

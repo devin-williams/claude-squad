@@ -602,7 +602,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		return nil, false
 	}
 
-	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && name == keys.KeyEnter {
+	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && (name == keys.KeyEnter || name == keys.KeyAttach) {
 		return nil, false
 	}
 	if name == keys.KeyShiftDown || name == keys.KeyShiftUp {
@@ -1012,41 +1012,62 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		return m.enterFocusMode(selected)
 	case keys.KeyEnter:
-		if m.list.NumInstances() == 0 {
+		selected := m.attachableSelection()
+		if selected == nil {
 			return m, nil
 		}
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		// Enter types into the preview rather than taking over the terminal; o still attaches.
+		if m.tabbedWindow.IsInPreviewTab() {
+			return m.enterFocusMode(selected)
+		}
+		return m.attachSelected()
+	case keys.KeyAttach:
+		if m.attachableSelection() == nil {
 			return m, nil
 		}
-		// Terminal tab: attach to terminal session
-		if m.tabbedWindow.IsInTerminalTab() {
-			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-				ch, err := m.tabbedWindow.AttachTerminal()
-				if err != nil {
-					m.handleError(err)
-					return
-				}
-				<-ch
-				m.state = stateDefault
-			})
-			return m, nil
-		}
-		// Show help screen before attaching
+		return m.attachSelected()
+	default:
+		return m, nil
+	}
+}
+
+// attachableSelection returns the selected instance when it is in a state that
+// can receive keystrokes, or nil.
+func (m *home) attachableSelection() *session.Instance {
+	if m.list.NumInstances() == 0 {
+		return nil
+	}
+	selected := m.list.GetSelectedInstance()
+	if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		return nil
+	}
+	return selected
+}
+
+func (m *home) attachSelected() (tea.Model, tea.Cmd) {
+	if m.tabbedWindow.IsInTerminalTab() {
 		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
+			ch, err := m.tabbedWindow.AttachTerminal()
 			if err != nil {
 				m.handleError(err)
 				return
 			}
 			<-ch
 			m.state = stateDefault
-			m.instanceChanged()
 		})
 		return m, nil
-	default:
-		return m, nil
 	}
+	m.showHelpScreen(helpTypeInstanceAttach{}, func() {
+		ch, err := m.list.Attach()
+		if err != nil {
+			m.handleError(err)
+			return
+		}
+		<-ch
+		m.state = stateDefault
+		m.instanceChanged()
+	})
+	return m, nil
 }
 
 // enterFocusMode switches to focus mode: keystrokes go to the selected session.
