@@ -40,6 +40,8 @@ const (
 	StateEmpty
 	StateNewInstance
 	StatePrompt
+	// StateFocus is shown while keystrokes are forwarded to a session.
+	StateFocus
 )
 
 type Menu struct {
@@ -80,6 +82,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyPrompt:            menuGroupInstance,
 	keys.KeyKill:              menuGroupInstance,
 	keys.KeyEnter:             menuGroupAction,
+	keys.KeyFocus:             menuGroupAction,
 	keys.KeySubmit:            menuGroupAction,
 	keys.KeyResume:            menuGroupAction,
 	keys.KeyCheckout:          menuGroupAction,
@@ -119,8 +122,9 @@ func (m *Menu) SetState(state MenuState) {
 // SetInstance updates the current instance and refreshes menu options
 func (m *Menu) SetInstance(instance *session.Instance) {
 	m.instance = instance
-	// Only change the state if we're not in a special state (NewInstance or Prompt)
-	if m.state != StateNewInstance && m.state != StatePrompt {
+	// Only change the state if we're not in a special state (NewInstance,
+	// Prompt, or Focus — those own the menu until they end).
+	if m.state != StateNewInstance && m.state != StatePrompt && m.state != StateFocus {
 		if m.instance != nil {
 			m.state = StateDefault
 		} else {
@@ -168,6 +172,9 @@ func (m *Menu) addInstanceOptions() {
 
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter}
+	if m.instance.Status != session.Paused {
+		actionGroup = append(actionGroup, keys.KeyFocus)
+	}
 	if !m.instance.InPlace {
 		actionGroup = append(actionGroup, keys.KeySubmit)
 	}
@@ -204,6 +211,15 @@ func (m *Menu) SetSize(width, height int) {
 }
 
 func (m *Menu) String() string {
+	if m.state == StateFocus {
+		hint := keyStyle.Render("ctrl-q/ctrl-f") + " " + descStyle.Render("back to menu") +
+			sepStyle.Render(separator) +
+			descStyle.Render("keys go to the session") +
+			sepStyle.Render(separator) +
+			keyStyle.Render("shift+↑/↓") + " " + descStyle.Render("scroll")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, menuStyle.Render(hint))
+	}
+
 	var s strings.Builder
 
 	for i, k := range m.options {
