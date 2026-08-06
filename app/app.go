@@ -11,8 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +24,13 @@ import (
 
 const GlobalInstanceLimit = 50
 
-// Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool, workspaceID string) error {
+// Run is the main entrypoint into the application. launchDir is the directory
+// cs was invoked from, used to resolve relative paths typed into the workspace
+// picker; callers must compute it once at startup rather than relying on
+// os.Getwd() later.
+func Run(ctx context.Context, program string, autoYes bool, workspaceID string, launchDir string) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes, workspaceID),
+		newHome(ctx, program, autoYes, workspaceID, launchDir),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -48,8 +50,18 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
-	// stateAddWorkspace is the state while the "add workspace" overlay is open.
-	stateAddWorkspace
+	// stateSelectWorkspace is the state while the workspace picker overlay is open.
+	stateSelectWorkspace
+)
+
+// workspacePickerMode distinguishes what Enter does in stateSelectWorkspace.
+type workspacePickerMode int
+
+const (
+	// workspacePickerCreate resolves the selection and creates a new session in it.
+	workspacePickerCreate workspacePickerMode = iota
+	// workspacePickerSwitch just sets the active workspace and returns to stateDefault.
+	workspacePickerSwitch
 )
 
 type home struct {
@@ -90,6 +102,13 @@ type home struct {
 	// workspaceID is the active workspace; new instances inherit it.
 	workspaceID string
 
+	// launchDir is the directory cs was invoked from, used to resolve relative
+	// paths typed into the workspace picker.
+	launchDir string
+
+	// workspacePickerMode records what Enter does while stateSelectWorkspace is active.
+	workspacePickerMode workspacePickerMode
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -108,34 +127,17 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+	// workspacePickerOverlay handles the type-to-filter workspace/path picker
+	workspacePickerOverlay *overlay.WorkspacePickerOverlay
 
 	metadataTick uint64
-}
-
-// nextWorkspace returns the workspace that should follow the currently-active one
-// when the user presses W. Returns nil if there's only one (or zero) workspaces
-// registered, in which case the key is a no-op.
-func (m *home) nextWorkspace() *config.Workspace {
-	reg := config.LoadWorkspaceRegistry()
-	if len(reg.Workspaces) < 2 {
-		return nil
-	}
-	idx := -1
-	for i, w := range reg.Workspaces {
-		if w.ID == m.workspaceID {
-			idx = i
-			break
-		}
-	}
-	next := reg.Workspaces[(idx+1)%len(reg.Workspaces)]
-	return &next
 }
 
 // sessionPath returns the git-repo path a new session should be rooted at.
 // When an active workspace is set we use its registered RepoPath (so cs-edge
 // can be launched anywhere — cwd doesn't have to be the repo). When no
-// workspace is active, we fall back to "." (the current behavior); the caller
-// should refuse to create a session in that case via requireWorkspace.
+// workspace is active, we fall back to "." (used only for stale branch
+// searches; new sessions now resolve their path from the workspace picker).
 func (m *home) sessionPath() string {
 	if m.workspaceID == "" {
 		return "."
@@ -145,82 +147,6 @@ func (m *home) sessionPath() string {
 		return ws.RepoPath
 	}
 	return "."
-}
-
-// requireWorkspace returns an error tea.Cmd suitable for refusing a new-session
-// action when no workspace is active. Returns nil if a workspace is set.
-func (m *home) requireWorkspace() tea.Cmd {
-	if m.workspaceID != "" {
-		return nil
-	}
-	return m.handleError(fmt.Errorf("no active workspace — press A to add one or W to switch into an existing one"))
-}
-
-// addWorkspaceFromPath handles a path the user typed into the Add-Workspace
-// overlay. It DTRTs across three cases:
-//   - path doesn't exist → mkdir -p, git init, empty initial commit
-//   - path exists but isn't a git repo → return a helpful error (we don't
-//     mutate existing directories implicitly)
-//   - path exists and is a git repo → register and switch to it
-//
-// On success the new workspace becomes the active one.
-func (m *home) addWorkspaceFromPath(rawPath string) error {
-	rawPath = strings.TrimSpace(rawPath)
-	if rawPath == "" {
-		return fmt.Errorf("path is empty")
-	}
-	if strings.HasPrefix(rawPath, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("expand ~: %w", err)
-		}
-		rawPath = filepath.Join(home, rawPath[1:])
-	}
-	abs, err := filepath.Abs(rawPath)
-	if err != nil {
-		return fmt.Errorf("resolve path: %w", err)
-	}
-
-	info, err := os.Stat(abs)
-	switch {
-	case os.IsNotExist(err):
-		if err := os.MkdirAll(abs, 0755); err != nil {
-			return fmt.Errorf("mkdir: %w", err)
-		}
-		if out, err := exec.Command("git", "-C", abs, "init", "-q").CombinedOutput(); err != nil {
-			return fmt.Errorf("git init: %w\n%s", err, out)
-		}
-	case err != nil:
-		return fmt.Errorf("stat %s: %w", abs, err)
-	case !info.IsDir():
-		return fmt.Errorf("%s is not a directory", abs)
-	case !git.IsGitRepo(abs):
-		return fmt.Errorf("%s exists but isn't a git repository — `git init` it first or pick a different path", abs)
-	}
-
-	// cs creates worktrees off HEAD; a freshly-init'd repo has no commits and
-	// `git worktree add` fails. Plant an empty initial commit if needed — works
-	// regardless of whether we created the repo ourselves or the user did.
-	if err := exec.Command("git", "-C", abs, "rev-parse", "HEAD").Run(); err != nil {
-		if out, err := exec.Command("git", "-C", abs, "commit", "-q", "--allow-empty", "-m", "Initial commit").CombinedOutput(); err != nil {
-			return fmt.Errorf("initial commit: %w\n%s", err, out)
-		}
-	}
-
-	canonical, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		canonical = abs
-	}
-	reg := config.LoadWorkspaceRegistry()
-	ws, err := reg.EnsureWorkspace(canonical, git.FirstRemoteURL(canonical))
-	if err != nil {
-		return fmt.Errorf("register workspace: %w", err)
-	}
-
-	m.workspaceID = ws.ID
-	m.list.SetActiveWorkspace(ws.DisplayName)
-	m.list.SetActiveWorkspaceID(ws.ID)
-	return nil
 }
 
 // resolveWorkspaceProgram returns the program command and profile name a new
@@ -241,45 +167,9 @@ func (m *home) resolveWorkspaceProgram() (program, profileName string) {
 	return ws.Profiles[0].Program, ws.Profiles[0].Name
 }
 
-// cycleViewFilter advances the view filter through "All → ws1 → ws2 → ... → All"
-// in the exact same order the tab bar renders (registry order, then any orphan
-// workspace ids that exist only as instance metadata). Each non-All stop ALSO
-// sets the active workspace, so new sessions land in whatever you're looking at.
-// On "All", the active workspace is left untouched.
-func (m *home) cycleViewFilter() string {
-	candidates := m.tabOrderIDs()
-	if len(candidates) == 0 {
-		m.list.SetViewFilter("")
-		return "All"
-	}
-	current := m.list.GetViewFilter()
-	switch {
-	case current == "":
-		m.applyWorkspaceFocus(candidates[0])
-		return m.labelForFilter(candidates[0])
-	default:
-		for i, id := range candidates {
-			if id == current {
-				if i+1 < len(candidates) {
-					m.applyWorkspaceFocus(candidates[i+1])
-					return m.labelForFilter(candidates[i+1])
-				}
-				// Cycled past the last workspace — back to All.
-				m.list.SetViewFilter("")
-				return "All"
-			}
-		}
-		// Current filter has disappeared (e.g. user removed the workspace
-		// while filtered to it). Reset to All so the next press picks
-		// something valid.
-		m.list.SetViewFilter("")
-		return "All"
-	}
-}
-
 // applyWorkspaceFocus updates both the view filter and the active workspace
-// (i.e. the "new sessions land here" target) in one shot. Used by V so cycling
-// the view and switching the new-session target stay aligned.
+// (i.e. the "new sessions land here" target) in one shot. Used by the
+// workspace picker so switching workspaces and filtering the list stay aligned.
 func (m *home) applyWorkspaceFocus(id string) {
 	m.list.SetViewFilter(id)
 	m.workspaceID = id
@@ -293,43 +183,55 @@ func (m *home) applyWorkspaceFocus(id string) {
 	}
 }
 
-// tabOrderIDs returns workspace ids in the same order the tab bar renders
-// them: registry order first, then orphan ids (instances whose workspace was
-// removed from the registry). Shared with the List so the cycle highlight
-// always advances in the visual direction of the tabs.
-func (m *home) tabOrderIDs() []string {
+// workspacePickerItems builds the picker rows from the registry, sorted
+// most-recently-used first so an empty filter + Enter picks the most recent.
+func (m *home) workspacePickerItems() []overlay.WorkspaceItem {
 	reg := config.LoadWorkspaceRegistry()
-	seen := map[string]struct{}{}
-	var ids []string
-	for _, w := range reg.Workspaces {
-		seen[w.ID] = struct{}{}
-		ids = append(ids, w.ID)
+	workspaces := make([]config.Workspace, len(reg.Workspaces))
+	copy(workspaces, reg.Workspaces)
+	sort.Slice(workspaces, func(i, j int) bool {
+		return workspaces[i].LastUsedAt.After(workspaces[j].LastUsedAt)
+	})
+
+	items := make([]overlay.WorkspaceItem, 0, len(workspaces))
+	for _, ws := range workspaces {
+		items = append(items, overlay.WorkspaceItem{
+			Label:    ws.DisplayName,
+			Path:     ws.RepoPath,
+			Kind:     overlay.KindRegistered,
+			Existing: true,
+		})
 	}
-	for _, inst := range m.list.GetInstances() {
-		if _, ok := seen[inst.WorkspaceID]; ok {
-			continue
-		}
-		seen[inst.WorkspaceID] = struct{}{}
-		ids = append(ids, inst.WorkspaceID)
-	}
-	return ids
+	return items
 }
 
-// labelForFilter resolves a workspace id to its display name. Returns "(unknown
-// workspace)" for orphan ids (instances pointing to a workspace that's been
-// removed from the registry).
-func (m *home) labelForFilter(id string) string {
-	if id == "" {
-		return "All"
+// classifyWorkspacePath adapts session.ClassifyPath for the picker's
+// PathClassifier callback.
+func (m *home) classifyWorkspacePath(raw string) (overlay.ItemKind, string) {
+	kind, note := session.ClassifyPath(raw, m.launchDir)
+	switch kind {
+	case session.KindRepoRoot:
+		return overlay.KindRepoRoot, note
+	case session.KindInsideRepo:
+		return overlay.KindInsideRepo, note
+	case session.KindNonGit:
+		return overlay.KindNonGit, note
+	case session.KindNotDir:
+		return overlay.KindNotDir, note
+	default:
+		return overlay.KindMissing, note
 	}
-	reg := config.LoadWorkspaceRegistry()
-	if ws := reg.Get(id); ws != nil {
-		return ws.DisplayName
-	}
-	return "(unknown workspace)"
 }
 
-func newHome(ctx context.Context, program string, autoYes bool, workspaceID string) *home {
+// openWorkspacePicker opens the workspace picker overlay in the given mode.
+func (m *home) openWorkspacePicker(mode workspacePickerMode) tea.Cmd {
+	m.workspacePickerMode = mode
+	m.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay(m.workspacePickerItems(), m.classifyWorkspacePath)
+	m.state = stateSelectWorkspace
+	return tea.WindowSize()
+}
+
+func newHome(ctx context.Context, program string, autoYes bool, workspaceID string, launchDir string) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -356,6 +258,7 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 		state:        stateDefault,
 		appState:     appState,
 		workspaceID:  workspaceID,
+		launchDir:    launchDir,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -408,6 +311,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	}
 	if m.textOverlay != nil {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
+	}
+	if m.workspacePickerOverlay != nil {
+		m.workspacePickerOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
 	}
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
@@ -599,7 +505,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateSelectWorkspace {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -804,32 +710,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		return m, nil
-	} else if m.state == stateAddWorkspace {
-		if msg.String() == "ctrl+c" {
-			m.textInputOverlay = nil
-			m.state = stateDefault
-			return m, tea.WindowSize()
-		}
-		// The underlying TextInputOverlay uses a multi-line textarea and routes
-		// Enter to "add newline" unless focus is on a separate submit button.
-		// For this single-line path entry we shortcut Enter directly to submit.
-		if msg.Type == tea.KeyEnter {
-			path := m.textInputOverlay.GetValue()
-			m.textInputOverlay = nil
-			m.state = stateDefault
-			if err := m.addWorkspaceFromPath(path); err != nil {
-				return m, tea.Batch(tea.WindowSize(), m.handleError(err))
-			}
-			return m, tea.WindowSize()
-		}
-		shouldClose, _ := m.textInputOverlay.HandleKeyPress(msg)
-		if !shouldClose {
-			return m, nil
-		}
-		// shouldClose only reaches here from Esc (cancel) since Enter is handled above.
-		m.textInputOverlay = nil
-		m.state = stateDefault
-		return m, tea.WindowSize()
+	} else if m.state == stateSelectWorkspace {
+		return m.handleWorkspacePickerState(msg)
 	}
 
 	// Handle confirmation state
@@ -882,63 +764,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
-
-		if cmd := m.requireWorkspace(); cmd != nil {
-			return m, cmd
-		}
-		repoPath := m.sessionPath()
-
-		// Start a background fetch so branches are up to date by the time the picker opens
-		fetchCmd := func() tea.Msg {
-			git.FetchBranches(repoPath)
-			return nil
-		}
-
-		program, profileName := m.resolveWorkspaceProgram()
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        repoPath,
-			Program:     program,
-			WorkspaceID: m.workspaceID,
-			ProfileName: profileName,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
 		m.promptAfterName = true
-
-		return m, fetchCmd
+		return m, m.openWorkspacePicker(workspacePickerCreate)
 	case keys.KeyNew:
 		if m.list.NumInstances() >= GlobalInstanceLimit {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
-		if cmd := m.requireWorkspace(); cmd != nil {
-			return m, cmd
-		}
-		program, profileName := m.resolveWorkspaceProgram()
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        m.sessionPath(),
-			Program:     program,
-			WorkspaceID: m.workspaceID,
-			ProfileName: profileName,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-
-		return m, nil
+		m.promptAfterName = false
+		return m, m.openWorkspacePicker(workspacePickerCreate)
 	case keys.KeyUp:
 		m.list.Up()
 		return m, m.instanceChanged()
@@ -1058,30 +892,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		return m, tea.WindowSize()
 	case keys.KeySwitchWorkspace:
-		next := m.nextWorkspace()
-		if next == nil {
-			return m, nil
-		}
-		m.workspaceID = next.ID
-		m.list.SetActiveWorkspace(next.DisplayName)
-		m.list.SetActiveWorkspaceID(next.ID)
-		return m, nil
-	case keys.KeyViewFilter:
-		m.cycleViewFilter()
-		return m, nil
+		return m, m.openWorkspacePicker(workspacePickerSwitch)
 	case keys.KeyCollapseWorkspace:
 		m.list.ToggleCollapseCurrent()
 		return m, nil
-	case keys.KeyAddWorkspace:
-		m.textInputOverlay = overlay.NewTextInputOverlay(
-			"Add workspace (enter a path; new dirs are git-init'd automatically)",
-			"",
-		)
-		m.state = stateAddWorkspace
-		// tea.WindowSize triggers updateHandleWindowSizeEvent which calls
-		// m.textInputOverlay.SetSize. Without this, the embedded textarea has
-		// width 0 → renders one char per line.
-		return m, tea.WindowSize()
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
 			return m, nil
@@ -1325,6 +1139,74 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 	)
 }
 
+// handleWorkspacePickerState handles key events while stateSelectWorkspace is active.
+func (m *home) handleWorkspacePickerState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.workspacePickerOverlay = nil
+		m.promptAfterName = false
+		m.state = stateDefault
+		return m, tea.WindowSize()
+	}
+
+	if msg.Type == tea.KeyEnter {
+		item, ok := m.workspacePickerOverlay.Selected()
+		if !ok {
+			return m, nil
+		}
+
+		target, err := session.ResolveSessionTarget(item.Path, m.launchDir)
+		if err != nil {
+			return m, m.handleError(err)
+		}
+		if target.Mode == session.ModeInPlace {
+			return m, m.handleError(fmt.Errorf("%s: %w", target.Dir, session.ErrInPlaceUnsupported))
+		}
+
+		reg := config.LoadWorkspaceRegistry()
+		ws, err := reg.EnsureWorkspace(target.Dir, git.FirstRemoteURL(target.Dir))
+		if err != nil {
+			return m, m.handleError(err)
+		}
+		m.applyWorkspaceFocus(ws.ID)
+		m.workspacePickerOverlay = nil
+
+		if m.workspacePickerMode == workspacePickerSwitch {
+			m.state = stateDefault
+			return m, tea.WindowSize()
+		}
+
+		// Start a background fetch so branches are up to date by the time the prompt overlay's picker opens.
+		fetchCmd := func() tea.Msg {
+			git.FetchBranches(target.Dir)
+			return nil
+		}
+
+		program, profileName := m.resolveWorkspaceProgram()
+		instance, err := session.NewInstance(session.InstanceOptions{
+			Title:       "",
+			Path:        target.Dir,
+			Program:     program,
+			WorkspaceID: m.workspaceID,
+			ProfileName: profileName,
+		})
+		if err != nil {
+			return m, m.handleError(err)
+		}
+		instance.SubDir = target.SubDir
+
+		m.newInstanceFinalizer = m.list.AddInstance(instance)
+		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+		m.state = stateNew
+		m.menu.SetState(ui.StateNewInstance)
+
+		return m, fetchCmd
+	}
+
+	m.workspacePickerOverlay.HandleKeyPress(msg)
+	return m, nil
+}
+
 // confirmAction shows a confirmation modal and stores the action to execute on confirm
 func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	m.state = stateConfirm
@@ -1362,11 +1244,16 @@ func (m *home) View() string {
 		m.errBox.String(),
 	)
 
-	if m.state == statePrompt || m.state == stateAddWorkspace {
+	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.textInputOverlay.Render(), mainView, true, true)
+	} else if m.state == stateSelectWorkspace {
+		if m.workspacePickerOverlay == nil {
+			log.ErrorLog.Printf("workspace picker overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.workspacePickerOverlay.Render(), mainView, true, true)
 	} else if m.state == stateHelp {
 		if m.textOverlay == nil {
 			log.ErrorLog.Printf("text overlay is nil")

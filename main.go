@@ -43,6 +43,11 @@ var (
 				return err
 			}
 
+			launchDir, err := filepath.Abs(".")
+			if err != nil {
+				return fmt.Errorf("failed to get current directory: %w", err)
+			}
+
 			reg := config.LoadWorkspaceRegistry()
 
 			var workspace *config.Workspace
@@ -57,19 +62,15 @@ var (
 				}
 				_ = reg.Touch(workspace.ID)
 			default:
-				currentDir, err := filepath.Abs(".")
-				if err != nil {
-					return fmt.Errorf("failed to get current directory: %w", err)
-				}
-				if git.IsGitRepo(currentDir) {
-					workspace, err = resolveOrRegisterWorkspace(reg, currentDir)
+				if git.IsGitRepo(launchDir) {
+					workspace, err = resolveOrRegisterWorkspace(reg, launchDir)
 					if err != nil {
 						return fmt.Errorf("workspace auto-register: %w", err)
 					}
 				} else {
 					// Not in a git repo — fall back to the most-recently-used
 					// workspace if any exist. If none do, run with no active
-					// workspace; the TUI surfaces a hint to add one with `A`.
+					// workspace; the TUI surfaces the `n` picker instead.
 					workspace = reg.MostRecentlyUsed()
 				}
 			}
@@ -112,7 +113,7 @@ var (
 			if err := daemon.StopLegacyDaemon(); err != nil {
 				log.WarningLog.Printf("failed to stop legacy daemon: %v", err)
 			}
-			return app.Run(ctx, program, autoYes, wsID)
+			return app.Run(ctx, program, autoYes, wsID, launchDir)
 		},
 	}
 

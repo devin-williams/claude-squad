@@ -58,6 +58,9 @@ type Instance struct {
 	WorkspaceID string
 	// ProfileName is the workspace profile this instance was launched with.
 	ProfileName string
+	// SubDir is the path, relative to the worktree root, the agent should start
+	// in. Empty means the worktree root itself.
+	SubDir string
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -89,6 +92,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		AutoYes:     i.AutoYes,
 		WorkspaceID: i.WorkspaceID,
 		ProfileName: i.ProfileName,
+		SubDir:      i.SubDir,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -129,6 +133,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Program:     data.Program,
 		WorkspaceID: data.WorkspaceID,
 		ProfileName: data.ProfileName,
+		SubDir:      data.SubDir,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -216,6 +221,23 @@ func (i *Instance) SetSelectedBranch(branch string) {
 	i.selectedBranch = branch
 }
 
+// tmuxWorkDir returns the directory tmux should start in: the typed
+// subdirectory inside the worktree if it exists there, otherwise the worktree
+// root. The subdirectory can be missing if it's gitignored or only exists on
+// another branch.
+func (i *Instance) tmuxWorkDir() string {
+	root := i.gitWorktree.GetWorktreePath()
+	if i.SubDir == "" {
+		return root
+	}
+	full := filepath.Join(root, i.SubDir)
+	if info, err := os.Stat(full); err == nil && info.IsDir() {
+		return full
+	}
+	log.WarningLog.Printf("subdirectory %q not found in worktree %s, starting session at worktree root", i.SubDir, root)
+	return root
+}
+
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
 func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
@@ -295,7 +317,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 
 		// Create new session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath(), env); err != nil {
+		if err := i.tmuxSession.Start(i.tmuxWorkDir(), env); err != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
@@ -570,7 +592,7 @@ func (i *Instance) Resume() error {
 		if err := i.tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Print(err)
 			// If restore fails, fall back to creating new session
-			if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath(), env); err != nil {
+			if err := i.tmuxSession.Start(i.tmuxWorkDir(), env); err != nil {
 				log.ErrorLog.Print(err)
 				// Cleanup git worktree if tmux session creation fails
 				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
@@ -582,7 +604,7 @@ func (i *Instance) Resume() error {
 		}
 	} else {
 		// Create new tmux session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath(), env); err != nil {
+		if err := i.tmuxSession.Start(i.tmuxWorkDir(), env); err != nil {
 			log.ErrorLog.Print(err)
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {

@@ -464,3 +464,97 @@ func TestConfirmationModalVisualAppearance(t *testing.T) {
 	// Test that the danger indicator is preserved
 	assert.Contains(t, rendered, "[!")
 }
+
+// newWorkspacePickerTestHome builds a minimal home for exercising the
+// workspace-picker handler directly, since driving the full bubbletea Update
+// loop (including the menu-highlighting re-send) is impractical from a unit
+// test. Setting keySent bypasses handleMenuHighlighting's re-send so
+// handleKeyPress reaches the real case/handler on the first call.
+func newWorkspacePickerTestHome(t *testing.T) *home {
+	spinnerModel := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	return &home{
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      ui.NewList(&spinnerModel, false),
+		menu:      ui.NewMenu(),
+		errBox:    ui.NewErrBox(),
+		keySent:   true,
+	}
+}
+
+// TestWorkspacePicker_OpensFromKeyNew verifies that `n` opens the picker
+// without queuing a prompt afterward.
+func TestWorkspacePicker_OpensFromKeyNew(t *testing.T) {
+	h := newWorkspacePickerTestHome(t)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}
+	model, _ := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+
+	assert.Equal(t, stateSelectWorkspace, homeModel.state)
+	assert.False(t, homeModel.promptAfterName)
+	assert.NotNil(t, homeModel.workspacePickerOverlay)
+	assert.Equal(t, workspacePickerCreate, homeModel.workspacePickerMode)
+}
+
+// TestWorkspacePicker_OpensFromKeyPrompt verifies that `N` opens the same
+// picker but queues a prompt afterward, unlike `n`.
+func TestWorkspacePicker_OpensFromKeyPrompt(t *testing.T) {
+	h := newWorkspacePickerTestHome(t)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")}
+	model, _ := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+
+	assert.Equal(t, stateSelectWorkspace, homeModel.state)
+	assert.True(t, homeModel.promptAfterName)
+	assert.NotNil(t, homeModel.workspacePickerOverlay)
+	assert.Equal(t, workspacePickerCreate, homeModel.workspacePickerMode)
+}
+
+// TestWorkspacePicker_EscReturnsToDefault verifies Esc discards the picker
+// without creating an instance, since no Instance exists yet at this point.
+func TestWorkspacePicker_EscReturnsToDefault(t *testing.T) {
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.promptAfterName = true
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay(nil, nil)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyEscape}
+	model, _ := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+
+	assert.Equal(t, stateDefault, homeModel.state)
+	assert.Nil(t, homeModel.workspacePickerOverlay)
+	assert.False(t, homeModel.promptAfterName)
+	assert.Equal(t, 0, homeModel.list.NumInstances())
+}
+
+// TestWorkspacePicker_EnterOnNonGitRefuses verifies that selecting a
+// directory without a .git refuses with ErrInPlaceUnsupported and stays in
+// the picker rather than creating a session (in-place sessions land later).
+func TestWorkspacePicker_EnterOnNonGitRefuses(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.launchDir = tmpDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: tmpDir, Path: tmpDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyEnter}
+	model, cmd := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, stateSelectWorkspace, homeModel.state)
+	assert.NotNil(t, homeModel.workspacePickerOverlay)
+	assert.Equal(t, 0, homeModel.list.NumInstances())
+}

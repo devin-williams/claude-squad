@@ -430,12 +430,12 @@ func (l *List) renderHeader() string {
 func (l *List) renderEmptyState() string {
 	if l.activeWorkspaceName != "" {
 		return emptyHintStyle.Render(fmt.Sprintf(
-			"No sessions in %q yet.\n\n  n   create a new session here\n  A   add another workspace\n  W   switch which workspace new sessions land in\n  ?   show help",
+			"No sessions in %q yet.\n\n  n   create a session (type to pick a workspace or path)\n  W   pick a different workspace\n  ?   show help",
 			l.activeWorkspaceName,
 		))
 	}
 	return emptyHintStyle.Render(
-		"No sessions yet.\n\n  A   add a workspace (existing or new directory)\n  ?   show help",
+		"No sessions yet.\n\n  n   create a session (type to pick a workspace or path)\n  ?   show help",
 	)
 }
 

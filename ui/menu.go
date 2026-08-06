@@ -55,7 +55,7 @@ type Menu struct {
 
 var defaultMenuOptions = []keys.KeyName{
 	keys.KeyNew, keys.KeyPrompt,
-	keys.KeyAddWorkspace, keys.KeySwitchWorkspace,
+	keys.KeySwitchWorkspace,
 	keys.KeyHelp, keys.KeyQuit,
 }
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
@@ -69,7 +69,7 @@ type menuGroup int
 const (
 	menuGroupInstance  menuGroup = iota // n / D
 	menuGroupAction                     // enter / submit / resume / checkout / shift-arrow
-	menuGroupWorkspace                  // A / W / V / z
+	menuGroupWorkspace                  // W / z
 	menuGroupSystem                     // tab / ? / q
 )
 
@@ -85,9 +85,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyCheckout:          menuGroupAction,
 	keys.KeyShiftUp:           menuGroupAction,
 	keys.KeyShiftDown:         menuGroupAction,
-	keys.KeyAddWorkspace:      menuGroupWorkspace,
 	keys.KeySwitchWorkspace:   menuGroupWorkspace,
-	keys.KeyViewFilter:        menuGroupWorkspace,
 	keys.KeyCollapseWorkspace: menuGroupWorkspace,
 	keys.KeyTab:               menuGroupSystem,
 	keys.KeyHelp:              menuGroupSystem,
@@ -183,7 +181,7 @@ func (m *Menu) addInstanceOptions() {
 
 	// Workspace group: workspace-management keys, surfaced in every state so
 	// users discover them without opening the full help screen.
-	workspaceGroup := []keys.KeyName{keys.KeyAddWorkspace, keys.KeySwitchWorkspace}
+	workspaceGroup := []keys.KeyName{keys.KeySwitchWorkspace}
 
 	// System group
 	systemGroup := []keys.KeyName{keys.KeyTab, keys.KeyHelp, keys.KeyQuit}

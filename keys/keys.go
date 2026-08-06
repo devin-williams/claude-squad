@@ -33,14 +33,10 @@ const (
 	KeyMoveUp
 	KeyMoveDown
 
-	// KeySwitchWorkspace cycles the active workspace (the one new sessions will be created in).
+	// KeySwitchWorkspace opens the workspace picker to change the active workspace (the one new sessions will be created in).
 	KeySwitchWorkspace
-	// KeyViewFilter cycles the workspace view filter (All → workspace 1 → ... → All).
-	KeyViewFilter
 	// KeyCollapseWorkspace toggles collapse on the currently-selected session's workspace group.
 	KeyCollapseWorkspace
-	// KeyAddWorkspace opens an overlay for adding a new workspace by path.
-	KeyAddWorkspace
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -65,9 +61,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"p":          KeySubmit,
 	"?":          KeyHelp,
 	"W":          KeySwitchWorkspace,
-	"V":          KeyViewFilter,
 	"z":          KeyCollapseWorkspace,
-	"A":          KeyAddWorkspace,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -130,19 +124,11 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeySwitchWorkspace: key.NewBinding(
 		key.WithKeys("W"),
-		key.WithHelp("W", "switch workspace"),
-	),
-	KeyViewFilter: key.NewBinding(
-		key.WithKeys("V"),
-		key.WithHelp("V", "filter view"),
+		key.WithHelp("W", "pick workspace"),
 	),
 	KeyCollapseWorkspace: key.NewBinding(
 		key.WithKeys("z"),
 		key.WithHelp("z", "fold group"),
-	),
-	KeyAddWorkspace: key.NewBinding(
-		key.WithKeys("A"),
-		key.WithHelp("A", "add workspace"),
 	),
 
 	KeyMoveUp: key.NewBinding(
