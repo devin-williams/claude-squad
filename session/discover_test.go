@@ -38,7 +38,7 @@ func TestDiscoverRepos(t *testing.T) {
 	// A nested repo must not surface: only one level below a root is scanned.
 	initRepo(t, filepath.Join(parent, "argonath", "vendored"))
 
-	got := names(DiscoverRepos([]string{parent}))
+	got := names(DiscoverRepos(DiscoverOptions{Roots: []string{parent}, Depth: 1}))
 	want := []string{"argonath", "remote-agents"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -54,7 +54,7 @@ func TestDiscoverReposDedupes(t *testing.T) {
 	parent := t.TempDir()
 	initRepo(t, filepath.Join(parent, "argonath"))
 
-	got := DiscoverRepos([]string{parent, parent})
+	got := DiscoverRepos(DiscoverOptions{Roots: []string{parent, parent}, Depth: 1})
 	if len(got) != 1 {
 		t.Fatalf("expected dedupe to one entry, got %v", names(got))
 	}
@@ -67,19 +67,96 @@ func TestDiscoveryRootsIncludesParentWhenInsideRepo(t *testing.T) {
 	initRepo(t, filepath.Join(parent, "remote-agents"))
 
 	// Launching from inside a repo should still find its siblings.
-	if got := names(DiscoverRepos(DiscoveryRoots(repo))); len(got) != 2 {
+	roots := DiscoveryRoots(repo)
+	if got := names(DiscoverRepos(DiscoverOptions{Roots: roots, Depth: 1})); len(got) != 2 {
 		t.Fatalf("expected sibling discovery from inside a repo, got %v", got)
 	}
 
 	// Launching from a plain parent scans only its own children.
-	roots := DiscoveryRoots(parent)
-	if len(roots) != 1 {
-		t.Fatalf("expected a single root for a non-repo launch dir, got %v", roots)
+	plainRoots := DiscoveryRoots(parent)
+	if len(plainRoots) != 1 {
+		t.Fatalf("expected a single root for a non-repo launch dir, got %v", plainRoots)
 	}
 }
 
 func TestDiscoveryRootsEmptyLaunchDir(t *testing.T) {
 	if roots := DiscoveryRoots(""); roots != nil {
 		t.Fatalf("expected nil roots, got %v", roots)
+	}
+}
+
+func TestDiscoverReposDepth2FindsGrandchildren(t *testing.T) {
+	parent := t.TempDir()
+	initRepo(t, filepath.Join(parent, "group", "argonath"))
+
+	got := names(DiscoverRepos(DiscoverOptions{Roots: []string{parent}, Depth: 1}))
+	if len(got) != 0 {
+		t.Fatalf("expected no repos at depth 1, got %v", got)
+	}
+
+	got = names(DiscoverRepos(DiscoverOptions{Roots: []string{parent}, Depth: 2}))
+	want := []string{"argonath"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestDiscoverReposSkipListExcludesDirectory(t *testing.T) {
+	parent := t.TempDir()
+	initRepo(t, filepath.Join(parent, "keep"))
+	initRepo(t, filepath.Join(parent, "node_modules", "skipped"))
+
+	got := names(DiscoverRepos(DiscoverOptions{
+		Roots: []string{parent},
+		Depth: 2,
+		Skip:  []string{"node_modules"},
+	}))
+	want := []string{"keep"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestDiscoverReposDoesNotDescendIntoRepoAtDepth2(t *testing.T) {
+	parent := t.TempDir()
+	initRepo(t, filepath.Join(parent, "argonath"))
+	initRepo(t, filepath.Join(parent, "argonath", "vendored"))
+
+	got := names(DiscoverRepos(DiscoverOptions{Roots: []string{parent}, Depth: 2}))
+	want := []string{"argonath"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected nested repo to be excluded, got %v", got)
+	}
+}
+
+func TestDiscoverReposExpandsTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory available")
+	}
+	tmpRepo, err := os.MkdirTemp(home, "cs-discover-tilde-*")
+	if err != nil {
+		t.Skip("cannot create temp dir under home")
+	}
+	defer os.RemoveAll(tmpRepo)
+	initRepo(t, filepath.Join(tmpRepo, "argonath"))
+
+	rel := "~/" + filepath.Base(tmpRepo)
+	got := names(DiscoverRepos(DiscoverOptions{Roots: []string{rel}, Depth: 1}))
+	want := []string{"argonath"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestDiscoverReposSkipsNonexistentRoot(t *testing.T) {
+	parent := t.TempDir()
+	initRepo(t, filepath.Join(parent, "argonath"))
+	missing := filepath.Join(parent, "does-not-exist")
+
+	got := names(DiscoverRepos(DiscoverOptions{Roots: []string{parent, missing}, Depth: 1}))
+	want := []string{"argonath"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

@@ -3,6 +3,7 @@ package overlay
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -93,12 +94,36 @@ func (wp *WorkspacePicker) filteredRegistered() []WorkspaceItem {
 	if wp.filter == "" {
 		return wp.items
 	}
-	lower := strings.ToLower(wp.filter)
-	var out []WorkspaceItem
-	for _, it := range wp.items {
-		if strings.Contains(strings.ToLower(it.Label), lower) || strings.Contains(strings.ToLower(it.Path), lower) {
-			out = append(out, it)
+
+	type scored struct {
+		item  WorkspaceItem
+		score int
+		index int
+	}
+	var matches []scored
+	for i, it := range wp.items {
+		labelScore, labelMatched := fuzzyScore(wp.filter, it.Label)
+		pathScore, pathMatched := fuzzyScore(wp.filter, it.Path)
+		if !labelMatched && !pathMatched {
+			continue
 		}
+		score := labelScore
+		if pathMatched && (!labelMatched || pathScore > labelScore) {
+			score = pathScore
+		}
+		matches = append(matches, scored{item: it, score: score, index: i})
+	}
+
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].index < matches[j].index
+	})
+
+	out := make([]WorkspaceItem, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m.item)
 	}
 	return out
 }

@@ -202,6 +202,34 @@ func TestLoadConfig(t *testing.T) {
 	})
 }
 
+func TestLoadConfigDefaultsDiscoveryWhenMissing(t *testing.T) {
+	// Create a temporary config directory
+	tempHome := t.TempDir()
+	configDir := filepath.Join(tempHome, ".claude-squad")
+	err := os.MkdirAll(configDir, 0755)
+	require.NoError(t, err)
+
+	// A config.json written before Discovery existed.
+	configPath := filepath.Join(configDir, ConfigFileName)
+	configContent := `{
+		"default_program": "test-claude",
+		"auto_yes": true,
+		"daemon_poll_interval": 2000,
+		"branch_prefix": "test/"
+	}`
+	err = os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", originalHome)
+
+	config := LoadConfig()
+
+	assert.Equal(t, "test-claude", config.DefaultProgram)
+	assert.Equal(t, DefaultDiscoveryConfig(), config.Discovery)
+}
+
 func TestGetProgram(t *testing.T) {
 	t.Run("no profiles returns default_program as-is", func(t *testing.T) {
 		cfg := &Config{DefaultProgram: "/usr/local/bin/claude"}

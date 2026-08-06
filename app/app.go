@@ -107,6 +107,11 @@ type home struct {
 	// paths typed into the workspace picker.
 	launchDir string
 
+	// discoveredRepos memoizes the filesystem discovery scan so reopening the
+	// picker doesn't re-walk the filesystem.
+	discoveredRepos       []session.DiscoveredRepo
+	discoveredReposLoaded bool
+
 	// workspacePickerMode records what Enter does while stateSelectWorkspace is active.
 	workspacePickerMode workspacePickerMode
 
@@ -206,7 +211,7 @@ func (m *home) workspacePickerItems() []overlay.WorkspaceItem {
 		seen[filepath.Clean(ws.RepoPath)] = true
 	}
 
-	for _, repo := range session.DiscoverRepos(session.DiscoveryRoots(m.launchDir)) {
+	for _, repo := range m.discoverRepos() {
 		if seen[filepath.Clean(repo.Path)] {
 			continue
 		}
@@ -217,6 +222,42 @@ func (m *home) workspacePickerItems() []overlay.WorkspaceItem {
 		})
 	}
 	return items
+}
+
+// discoverRepos runs (and memoizes) the filesystem discovery scan: the launch
+// dir's roots at depth 1, plus the configured roots at the configured depth.
+func (m *home) discoverRepos() []session.DiscoveredRepo {
+	if m.discoveredReposLoaded {
+		return m.discoveredRepos
+	}
+	m.discoveredReposLoaded = true
+
+	launchRoots := session.DiscoveryRoots(m.launchDir)
+	discovery := m.appConfig.Discovery
+
+	repos := session.DiscoverRepos(session.DiscoverOptions{Roots: launchRoots, Depth: 1})
+	seen := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		seen[filepath.Clean(r.Path)] = true
+	}
+
+	for _, r := range session.DiscoverRepos(session.DiscoverOptions{
+		Roots: discovery.Roots,
+		Depth: discovery.Depth,
+		Skip:  discovery.Skip,
+	}) {
+		clean := filepath.Clean(r.Path)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		repos = append(repos, r)
+	}
+
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+
+	m.discoveredRepos = repos
+	return m.discoveredRepos
 }
 
 // classifyWorkspacePath adapts session.ClassifyPath for the picker's

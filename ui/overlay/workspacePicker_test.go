@@ -191,3 +191,57 @@ func TestEnterAndEscNotConsumed(t *testing.T) {
 	require.False(t, wp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter}))
 	require.False(t, wp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEsc}))
 }
+
+func TestFuzzyFilterMatchesNonSubstring(t *testing.T) {
+	items := []WorkspaceItem{
+		{Label: "remote-agents", Path: "/Users/dev/repos/remote-agents", Kind: KindRegistered, Existing: true},
+	}
+	wp := NewWorkspacePicker(items, nil)
+	typeRunes(wp, "rmt-agents")
+	got := wp.visibleItems()
+	require.Len(t, got, 1)
+	require.Equal(t, "remote-agents", got[0].Label)
+}
+
+func TestEmptyFilterPreservesCallerOrderExactly(t *testing.T) {
+	src := []WorkspaceItem{
+		{Label: "zzz", Path: "/z", Kind: KindRegistered, Existing: true},
+		{Label: "aaa", Path: "/a", Kind: KindRegistered, Existing: true},
+		{Label: "mmm", Path: "/m", Kind: KindRegistered, Existing: true},
+	}
+	wp := NewWorkspacePicker(src, nil)
+	got := wp.visibleItems()
+	require.Len(t, got, len(src))
+	for i, it := range got {
+		require.Equal(t, src[i].Label, it.Label)
+	}
+}
+
+func TestNonEmptyFilterRanksByScoreWithOriginalIndexTieBreak(t *testing.T) {
+	// "argo" matches "argonath" and "argo-two" with equal fuzzy score
+	// (both are a contiguous prefix match); MRU order (original index) breaks
+	// the tie, so the item earlier in the caller's list must win.
+	src := []WorkspaceItem{
+		{Label: "argo-two", Path: "/repos/argo-two", Kind: KindRegistered, Existing: true},
+		{Label: "unrelated", Path: "/repos/unrelated", Kind: KindRegistered, Existing: true},
+		{Label: "argonath", Path: "/repos/argonath", Kind: KindRegistered, Existing: true},
+	}
+	wp := NewWorkspacePicker(src, nil)
+	typeRunes(wp, "argo")
+	got := wp.visibleItems()
+	require.Len(t, got, 2)
+	require.Equal(t, "argo-two", got[0].Label)
+	require.Equal(t, "argonath", got[1].Label)
+}
+
+func TestNonEmptyFilterSortsHigherScoreFirst(t *testing.T) {
+	src := []WorkspaceItem{
+		{Label: "some-other-remote", Path: "/repos/some-other-remote", Kind: KindRegistered, Existing: true},
+		{Label: "remote-agents", Path: "/repos/remote-agents", Kind: KindRegistered, Existing: true},
+	}
+	wp := NewWorkspacePicker(src, nil)
+	typeRunes(wp, "re")
+	got := wp.visibleItems()
+	require.Len(t, got, 2)
+	require.Equal(t, "remote-agents", got[0].Label)
+}

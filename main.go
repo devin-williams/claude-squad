@@ -187,9 +187,16 @@ var (
 
 			launchDir, err := filepath.Abs(".")
 			if err == nil {
-				roots := session.DiscoveryRoots(launchDir)
-				repos := session.DiscoverRepos(roots)
-				fmt.Printf("\nDiscovery roots: %v\n", roots)
+				launchRoots := session.DiscoveryRoots(launchDir)
+				discovery := cfg.Discovery
+				repos := session.DiscoverRepos(session.DiscoverOptions{Roots: launchRoots, Depth: 1})
+				repos = append(repos, session.DiscoverRepos(session.DiscoverOptions{
+					Roots: discovery.Roots,
+					Depth: discovery.Depth,
+					Skip:  discovery.Skip,
+				})...)
+				fmt.Printf("\nDiscovery roots: %v\n", launchRoots)
+				fmt.Printf("Configured discovery roots: %v (depth %d, skip %v)\n", discovery.Roots, discovery.Depth, discovery.Skip)
 				fmt.Printf("Discovered repos (%d):\n", len(repos))
 				for _, r := range repos {
 					fmt.Printf("  %s\t%s\n", r.Name, r.Path)

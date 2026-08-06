@@ -56,6 +56,33 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// Discovery configures where the workspace picker looks for repos beyond
+	// the launch directory.
+	Discovery DiscoveryConfig `json:"discovery"`
+}
+
+// DiscoveryConfig controls the workspace picker's filesystem discovery.
+type DiscoveryConfig struct {
+	// Roots are additional directories to scan, in addition to the launch dir.
+	Roots []string `json:"roots"`
+	// Depth is how many directory levels below each root to scan. Depth 1
+	// scans immediate children only.
+	Depth int `json:"depth"`
+	// Skip is a list of directory names (or path suffixes, e.g. "go/pkg") to
+	// exclude from the scan.
+	Skip []string `json:"skip"`
+}
+
+// DefaultDiscoveryConfig returns the default discovery configuration.
+func DefaultDiscoveryConfig() DiscoveryConfig {
+	return DiscoveryConfig{
+		Roots: []string{"~"},
+		Depth: 1,
+		Skip: []string{
+			"Library", "node_modules", ".git", ".Trash", ".cache", "go/pkg",
+			"Applications", ".npm", ".cargo", "venv", ".venv", ".nvm",
+		},
+	}
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and
@@ -105,6 +132,7 @@ func DefaultConfig() *Config {
 		DefaultProgram:     program,
 		AutoYes:            false,
 		DaemonPollInterval: 1000,
+		Discovery:          DefaultDiscoveryConfig(),
 		BranchPrefix: func() string {
 			user, err := user.Current()
 			if err != nil || user == nil || user.Username == "" {
@@ -191,6 +219,12 @@ func LoadConfig() *Config {
 	if err := json.Unmarshal(data, &config); err != nil {
 		log.ErrorLog.Printf("failed to parse config file: %v", err)
 		return DefaultConfig()
+	}
+
+	// A config.json saved before Discovery existed unmarshals it as the zero
+	// value, so a stale file must still get the defaults.
+	if config.Discovery.Roots == nil && config.Discovery.Depth == 0 && config.Discovery.Skip == nil {
+		config.Discovery = DefaultDiscoveryConfig()
 	}
 
 	return &config
