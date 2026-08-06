@@ -248,6 +248,10 @@ func (r *InstanceRenderer) setWidth(width int) {
 // ɹ and ɻ are other options.
 const branchIcon = "Ꮧ"
 
+// inPlaceIcon marks a session with no worktree and no branch, so it reads as
+// different from a normal branch row at a glance.
+const inPlaceIcon = "⌂"
+
 func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, hasMultipleRepos bool) string {
 	prefix := fmt.Sprintf(" %d. ", idx)
 	if idx >= 10 {
@@ -305,9 +309,16 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		)
 	}
 
+	icon := branchIcon
+	branch := i.Branch
+	if i.InPlace {
+		icon = inPlaceIcon
+		branch = homeShorten(i.Path)
+	}
+
 	remainingWidth := r.width
 	remainingWidth -= runewidth.StringWidth(prefix)
-	remainingWidth -= runewidth.StringWidth(branchIcon)
+	remainingWidth -= runewidth.StringWidth(icon)
 	remainingWidth -= 2 // for the literal " " and "-" in the branchLine format string
 
 	diffWidth := runewidth.StringWidth(addedDiff) + runewidth.StringWidth(removedDiff)
@@ -318,7 +329,6 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	// Use fixed width for diff stats to avoid layout issues
 	remainingWidth -= diffWidth
 
-	branch := i.Branch
 	if i.Started() && hasMultipleRepos {
 		repoName, err := i.RepoName()
 		if err != nil {
@@ -347,7 +357,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		spaces = strings.Repeat(" ", remainingWidth)
 	}
 
-	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
+	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), icon, branch, spaces, diff)
 
 	// join title and subtitle
 	text := lipgloss.JoinVertical(

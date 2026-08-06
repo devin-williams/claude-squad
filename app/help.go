@@ -67,6 +67,21 @@ func (h helpTypeGeneral) toContent() string {
 }
 
 func (h helpTypeInstanceStart) toContent() string {
+	if h.instance.InPlace {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render("Instance Created"),
+			"",
+			descStyle.Render("New in-place session created:"),
+			descStyle.Render("• No worktree, no branch — edits are live in the target directory"),
+			descStyle.Render(fmt.Sprintf("• %s running in background tmux session",
+				lipgloss.NewStyle().Bold(true).Render(h.instance.Program))),
+			"",
+			headerStyle.Render("Managing:"),
+			keyStyle.Render("↵/o")+descStyle.Render("   - Attach to the session to interact with it directly"),
+			keyStyle.Render("D")+descStyle.Render("     - Kill (delete) the selected session"),
+		)
+	}
+
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Instance Created"),
 		"",

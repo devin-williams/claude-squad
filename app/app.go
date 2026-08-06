@@ -869,6 +869,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Status == session.Loading {
 			return m, nil
 		}
+		if selected.InPlace {
+			return m, m.handleError(fmt.Errorf("push is unavailable for in-place sessions — commit from your own shell"))
+		}
 
 		// Create the push action as a tea.Cmd
 		pushAction := func() tea.Msg {
@@ -891,6 +894,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.Status == session.Loading {
 			return m, nil
+		}
+		if selected.InPlace {
+			return m, m.handleError(fmt.Errorf("checkout is unavailable for in-place sessions — commit from your own shell"))
 		}
 
 		// Show help screen before pausing
@@ -1196,7 +1202,7 @@ func (m *home) handleWorkspacePickerState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		if target.Mode == session.ModeInPlace {
-			return m, m.handleError(fmt.Errorf("%s: %w", target.Dir, session.ErrInPlaceUnsupported))
+			return m.enterInPlaceTarget(target)
 		}
 
 		reg := config.LoadWorkspaceRegistry()
@@ -1241,6 +1247,99 @@ func (m *home) handleWorkspacePickerState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	m.workspacePickerOverlay.HandleKeyPress(msg)
 	return m, nil
+}
+
+// enterInPlaceTarget creates a session for a resolved ModeInPlace target,
+// refusing a second in-place session in the same directory and requiring
+// confirmation when the target is exactly $HOME.
+func (m *home) enterInPlaceTarget(target session.SessionTarget) (tea.Model, tea.Cmd) {
+	if existing := m.findInPlaceInstance(target.Dir); existing != nil {
+		return m, m.handleError(fmt.Errorf("an in-place session %q is already running in %s", existing.Title, target.Dir))
+	}
+
+	if isHomeDir(target.Dir) {
+		message := "Start an agent in your home directory? It edits files in place across all of ~ with no worktree, no branch, and no diff to review."
+		m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
+		m.confirmationOverlay.SetWidth(50)
+		m.confirmationOverlay.OnConfirm = func() {
+			_ = m.createInPlaceInstance(target)
+		}
+		m.confirmationOverlay.OnCancel = func() {
+			m.state = stateSelectWorkspace
+		}
+		m.state = stateConfirm
+		return m, nil
+	}
+
+	return m, m.createInPlaceInstance(target)
+}
+
+// findInPlaceInstance returns the existing in-place instance rooted at dir, if
+// any. Two in-place sessions in one directory have no isolation and would
+// fight over the same files. Only this process's list is visible.
+func (m *home) findInPlaceInstance(dir string) *session.Instance {
+	for _, inst := range m.list.GetInstances() {
+		if inst.InPlace && filepath.Clean(inst.Path) == dir {
+			return inst
+		}
+	}
+	return nil
+}
+
+// isHomeDir reports whether dir is exactly the user's home directory
+// (canonical comparison, not a prefix match).
+func isHomeDir(dir string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	if canonical, err := filepath.EvalSymlinks(home); err == nil {
+		home = canonical
+	}
+	return dir == home
+}
+
+// createInPlaceInstance registers target.Dir as a non-git workspace and
+// creates an in-place session in it, mirroring the worktree creation path in
+// handleWorkspacePickerState minus the branch prefetch (there are no branches).
+func (m *home) createInPlaceInstance(target session.SessionTarget) tea.Cmd {
+	reg := config.LoadWorkspaceRegistry()
+	ws, err := reg.EnsureWorkspace(target.Dir, "")
+	if err != nil {
+		return m.handleError(err)
+	}
+	if !ws.NonGit {
+		ws.NonGit = true
+		if err := reg.Upsert(*ws); err != nil {
+			return m.handleError(err)
+		}
+	}
+	m.applyWorkspaceFocus(ws.ID)
+	m.workspacePickerOverlay = nil
+
+	if m.workspacePickerMode == workspacePickerSwitch {
+		m.state = stateDefault
+		return tea.WindowSize()
+	}
+
+	program, profileName := m.resolveWorkspaceProgram()
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:       "",
+		Path:        target.Dir,
+		Program:     program,
+		WorkspaceID: m.workspaceID,
+		ProfileName: profileName,
+		InPlace:     true,
+	})
+	if err != nil {
+		return m.handleError(err)
+	}
+
+	m.newInstanceFinalizer = m.list.AddInstance(instance)
+	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+	m.state = stateNew
+	m.menu.SetState(ui.StateNewInstance)
+	return nil
 }
 
 // confirmAction shows a confirmation modal and stores the action to execute on confirm

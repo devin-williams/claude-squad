@@ -2,6 +2,8 @@ package ui
 
 import (
 	"claude-squad/session"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -72,4 +74,31 @@ func TestMoveWithSingleItem(t *testing.T) {
 
 	require.False(t, l.MoveUp())
 	require.False(t, l.MoveDown())
+}
+
+// TestRender_InPlaceInstanceShowsHomeShortenedPath verifies that an in-place
+// instance renders its home-shortened path with a distinct icon instead of a
+// bare branch icon, since it has no branch to show.
+func TestRender_InPlaceInstanceShowsHomeShortenedPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	inPlaceDir := filepath.Join(homeDir, "dotfiles")
+	require.NoError(t, os.MkdirAll(inPlaceDir, 0o755))
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title:   "dots",
+		Path:    inPlaceDir,
+		Program: "echo",
+		InPlace: true,
+	})
+	require.NoError(t, err)
+	l.AddInstance(inst)
+	l.SetSize(80, 20)
+
+	rendered := l.String()
+	require.Contains(t, rendered, inPlaceIcon)
+	require.Contains(t, rendered, "~/dotfiles")
+	require.NotContains(t, rendered, branchIcon)
 }

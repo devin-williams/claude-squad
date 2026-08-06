@@ -2,7 +2,6 @@ package session
 
 import (
 	"claude-squad/session/git"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,10 +22,6 @@ type SessionTarget struct {
 	SubDir   string // for ModeWorktree: path of the typed dir RELATIVE to Dir; "" when the typed path IS the repo root
 	Existing bool   // true if an entry for this target is already in the workspace registry
 }
-
-// ErrInPlaceUnsupported is returned by callers that refuse to create a session
-// for a ModeInPlace target; ResolveSessionTarget itself never returns it.
-var ErrInPlaceUnsupported = errors.New("directories without a .git are not supported yet")
 
 func expandPath(raw, launchDir string) (string, error) {
 	raw = strings.TrimSpace(raw)

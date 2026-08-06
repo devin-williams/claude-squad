@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -534,10 +535,12 @@ func TestWorkspacePicker_EscReturnsToDefault(t *testing.T) {
 	assert.Equal(t, 0, homeModel.list.NumInstances())
 }
 
-// TestWorkspacePicker_EnterOnNonGitRefuses verifies that selecting a
-// directory without a .git refuses with ErrInPlaceUnsupported and stays in
-// the picker rather than creating a session (in-place sessions land later).
-func TestWorkspacePicker_EnterOnNonGitRefuses(t *testing.T) {
+// TestWorkspacePicker_EnterOnNonGitCreatesInPlace verifies that selecting a
+// directory without a .git now creates an in-place instance instead of
+// refusing.
+func TestWorkspacePicker_EnterOnNonGitCreatesInPlace(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	h := newWorkspacePickerTestHome(t)
@@ -549,12 +552,159 @@ func TestWorkspacePicker_EnterOnNonGitRefuses(t *testing.T) {
 	}, nil)
 
 	keyMsg := tea.KeyMsg{Type: tea.KeyEnter}
-	model, cmd := h.handleKeyPress(keyMsg)
+	model, _ := h.handleKeyPress(keyMsg)
 	homeModel, ok := model.(*home)
+	require.True(t, ok)
+
+	canonicalTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	require.NoError(t, err)
+
+	assert.Equal(t, stateNew, homeModel.state)
+	assert.Equal(t, 1, homeModel.list.NumInstances())
+	selected := homeModel.list.GetSelectedInstance()
+	require.NotNil(t, selected)
+	assert.True(t, selected.InPlace)
+	assert.Equal(t, canonicalTmpDir, selected.Path)
+}
+
+// TestWorkspacePicker_EnterOnNonGitTwiceRefusesSecond verifies that a second
+// in-place session in the same directory is refused and the state stays in
+// the picker, since two in-place sessions there would fight over the same
+// files with no isolation.
+func TestWorkspacePicker_EnterOnNonGitTwiceRefusesSecond(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.launchDir = tmpDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: tmpDir, Path: tmpDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyEnter}
+	model, _ := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+	require.Equal(t, 1, homeModel.list.NumInstances())
+
+	homeModel.state = stateSelectWorkspace
+	homeModel.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: tmpDir, Path: tmpDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	model, cmd := homeModel.handleKeyPress(keyMsg)
+	homeModel, ok = model.(*home)
 	require.True(t, ok)
 
 	require.NotNil(t, cmd)
 	assert.Equal(t, stateSelectWorkspace, homeModel.state)
 	assert.NotNil(t, homeModel.workspacePickerOverlay)
+	assert.Equal(t, 1, homeModel.list.NumInstances())
+}
+
+// TestWorkspacePicker_EnterOnHomeRequiresConfirmation verifies that resolving
+// exactly $HOME opens a confirmation overlay instead of creating the session
+// immediately.
+func TestWorkspacePicker_EnterOnHomeRequiresConfirmation(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.launchDir = homeDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: homeDir, Path: homeDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyEnter}
+	model, _ := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+
+	assert.Equal(t, stateConfirm, homeModel.state)
+	assert.NotNil(t, homeModel.confirmationOverlay)
 	assert.Equal(t, 0, homeModel.list.NumInstances())
+}
+
+// TestWorkspacePicker_DeclineHomeConfirmationReturnsToPicker verifies that
+// declining the $HOME confirmation returns to the picker (not stateDefault)
+// without creating an instance.
+func TestWorkspacePicker_DeclineHomeConfirmationReturnsToPicker(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.launchDir = homeDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: homeDir, Path: homeDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyEnter}
+	model, _ := h.handleKeyPress(keyMsg)
+	homeModel, ok := model.(*home)
+	require.True(t, ok)
+	require.Equal(t, stateConfirm, homeModel.state)
+	require.NotNil(t, homeModel.confirmationOverlay)
+
+	homeModel.confirmationOverlay.OnCancel()
+
+	assert.Equal(t, stateSelectWorkspace, homeModel.state)
+	assert.Equal(t, 0, homeModel.list.NumInstances())
+}
+
+// TestInPlaceInstance_PushAndCheckoutRefused verifies that `p` and `c` on an
+// in-place instance produce an error and never open a confirmation overlay,
+// since both structurally require a git worktree that in-place sessions
+// don't have.
+func TestInPlaceInstance_PushAndCheckoutRefused(t *testing.T) {
+	inPlaceInstance := func(t *testing.T) *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title:   "in-place-test",
+			Path:    t.TempDir(),
+			Program: "claude",
+			InPlace: true,
+		})
+		require.NoError(t, err)
+		return inst
+	}
+
+	t.Run("p refuses without confirmation", func(t *testing.T) {
+		h := newWorkspacePickerTestHome(t)
+		inst := inPlaceInstance(t)
+		h.list.AddInstance(inst)
+		h.list.SetSelectedInstance(0)
+
+		keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")}
+		model, cmd := h.handleKeyPress(keyMsg)
+		homeModel, ok := model.(*home)
+		require.True(t, ok)
+
+		require.NotNil(t, cmd)
+		assert.NotEqual(t, stateConfirm, homeModel.state)
+		assert.Nil(t, homeModel.confirmationOverlay)
+	})
+
+	t.Run("c refuses without confirmation", func(t *testing.T) {
+		h := newWorkspacePickerTestHome(t)
+		inst := inPlaceInstance(t)
+		h.list.AddInstance(inst)
+		h.list.SetSelectedInstance(0)
+
+		keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}
+		model, cmd := h.handleKeyPress(keyMsg)
+		homeModel, ok := model.(*home)
+		require.True(t, ok)
+
+		require.NotNil(t, cmd)
+		assert.NotEqual(t, stateConfirm, homeModel.state)
+		assert.Nil(t, homeModel.confirmationOverlay)
+	})
 }

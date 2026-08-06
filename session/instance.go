@@ -187,6 +187,9 @@ type InstanceOptions struct {
 	WorkspaceID string
 	// ProfileName is the workspace profile to use. Optional.
 	ProfileName string
+	// InPlace is true if this instance should run directly in Path with no
+	// worktree, no branch, and no isolation.
+	InPlace bool
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -211,6 +214,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		selectedBranch: opts.Branch,
 		WorkspaceID:    opts.WorkspaceID,
 		ProfileName:    opts.ProfileName,
+		InPlace:        opts.InPlace,
 	}, nil
 }
 
