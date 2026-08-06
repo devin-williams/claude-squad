@@ -244,7 +244,7 @@ var (
 
 	workspaceAddCmd = &cobra.Command{
 		Use:   "add <path>",
-		Short: "Register a git repo as a workspace (idempotent)",
+		Short: "Register a path as a workspace (idempotent); creates+inits a repo if the path doesn't exist yet",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log.Initialize(false)
@@ -253,6 +253,33 @@ var (
 			if err != nil {
 				return err
 			}
+
+			info, err := os.Stat(abs)
+			switch {
+			case os.IsNotExist(err):
+				if err := os.MkdirAll(abs, 0755); err != nil {
+					return fmt.Errorf("mkdir: %w", err)
+				}
+				if out, err := exec.Command("git", "-C", abs, "init", "-q").CombinedOutput(); err != nil {
+					return fmt.Errorf("git init: %w\n%s", err, out)
+				}
+			case err != nil:
+				return fmt.Errorf("stat %s: %w", abs, err)
+			case !info.IsDir():
+				return fmt.Errorf("%s is not a directory", abs)
+			}
+
+			// cs creates worktrees off HEAD; a freshly-init'd repo has no commits and
+			// `git worktree add` fails. Plant an empty initial commit if needed —
+			// works regardless of whether we created the repo ourselves or the user did.
+			if git.IsGitRepo(abs) {
+				if err := exec.Command("git", "-C", abs, "rev-parse", "HEAD").Run(); err != nil {
+					if out, err := exec.Command("git", "-C", abs, "commit", "-q", "--allow-empty", "-m", "Initial commit").CombinedOutput(); err != nil {
+						return fmt.Errorf("initial commit: %w\n%s", err, out)
+					}
+				}
+			}
+
 			reg := config.LoadWorkspaceRegistry()
 			ws, err := resolveOrRegisterWorkspace(reg, abs)
 			if err != nil {
@@ -316,11 +343,89 @@ var (
 			return reg.Remove(ws.ID)
 		},
 	}
+
+	workspaceClearCmd = &cobra.Command{
+		Use:   "clear",
+		Short: "Remove all workspaces from the registry, except those still referenced by a stored session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+			reg := config.LoadWorkspaceRegistry()
+
+			referenced, err := workspaceIDsInUse()
+			if err != nil {
+				return fmt.Errorf("scan stored instances: %w", err)
+			}
+
+			var kept, removed []config.Workspace
+			for _, ws := range reg.Workspaces {
+				if referenced[ws.ID] {
+					kept = append(kept, ws)
+				} else {
+					removed = append(removed, ws)
+				}
+			}
+
+			for _, ws := range removed {
+				if err := reg.Remove(ws.ID); err != nil {
+					return fmt.Errorf("remove workspace %s: %w", ws.ID, err)
+				}
+			}
+
+			for _, ws := range kept {
+				fmt.Printf("kept %s (in use by a stored session)\n", ws.String())
+			}
+			fmt.Printf("removed %d workspace(s), kept %d\n", len(removed), len(kept))
+			return nil
+		},
+	}
 )
 
+// workspaceIDsInUse returns the set of workspace IDs referenced by any
+// instance in state.json, read directly from the raw JSON so this doesn't
+// require loading/starting instances.
+func workspaceIDsInUse() (map[string]bool, error) {
+	state := config.LoadState()
+	raw := state.GetInstances()
+	if len(raw) == 0 || string(raw) == "null" {
+		return map[string]bool{}, nil
+	}
+	var data []session.InstanceData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, d := range data {
+		if d.WorkspaceID != "" {
+			ids[d.WorkspaceID] = true
+		}
+	}
+	return ids, nil
+}
+
 // resolveOrRegisterWorkspace finds the workspace for the git repo containing
-// dirOrRepo, registering it silently if it doesn't exist.
+// dirOrRepo, registering it silently if it doesn't exist. If dirOrRepo isn't
+// inside a git repo at all, it registers dirOrRepo itself as a non-git
+// workspace instead of erroring.
 func resolveOrRegisterWorkspace(reg *config.WorkspaceRegistry, dirOrRepo string) (*config.Workspace, error) {
+	if !git.IsGitRepo(dirOrRepo) {
+		canonical, err := filepath.EvalSymlinks(dirOrRepo)
+		if err != nil {
+			canonical = dirOrRepo
+		}
+		ws, err := reg.EnsureWorkspace(canonical, "")
+		if err != nil {
+			return nil, err
+		}
+		if !ws.NonGit {
+			ws.NonGit = true
+			if err := reg.Upsert(*ws); err != nil {
+				return nil, err
+			}
+		}
+		return ws, nil
+	}
+
 	root, err := git.FindGitRepoRoot(dirOrRepo)
 	if err != nil {
 		return nil, err
@@ -420,6 +525,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceLsCmd)
 	workspaceCmd.AddCommand(workspaceAddCmd)
 	workspaceCmd.AddCommand(workspaceRmCmd)
+	workspaceCmd.AddCommand(workspaceClearCmd)
 	workspaceCmd.AddCommand(workspaceEditCmd)
 	rootCmd.AddCommand(workspaceCmd)
 }

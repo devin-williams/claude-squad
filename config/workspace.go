@@ -41,6 +41,7 @@ type Workspace struct {
 	Profiles    []WorkspaceProfile `json:"profiles,omitempty"`
 	WorktreeDir string             `json:"worktree_dir,omitempty"`
 	Hooks       Hooks              `json:"hooks,omitempty"`
+	NonGit      bool               `json:"non_git,omitempty"`
 	CreatedAt   time.Time          `json:"created_at"`
 	LastUsedAt  time.Time          `json:"last_used_at"`
 }
