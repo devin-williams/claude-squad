@@ -91,6 +91,21 @@ func NewTabbedWindow(preview *PreviewPane, diff *DiffPane, terminal *TerminalPan
 }
 
 func (w *TabbedWindow) SetInstance(instance *session.Instance) {
+	// Scroll mode is pane-level, not per-session: left set across a selection
+	// change it suppresses UpdateContent, so the new session would render the
+	// old one's frozen snapshot until something else cleared it.
+	if instance != w.instance {
+		if w.preview != nil {
+			if err := w.preview.ResetToNormalMode(instance); err != nil {
+				log.ErrorLog.Printf("could not reset preview scroll mode: %v", err)
+			}
+			// ResetToNormalMode declines a nil or paused instance, so clear anyway.
+			w.preview.ClearScrollMode()
+		}
+		if w.terminal != nil {
+			w.terminal.ResetToNormalMode()
+		}
+	}
 	w.instance = instance
 }
 

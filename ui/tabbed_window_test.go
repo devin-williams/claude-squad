@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"claude-squad/session"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,4 +75,45 @@ func TestFocusTogglesCursorAndBorder(t *testing.T) {
 	w.SetShowCursor(false)
 	assert.False(t, w.focused)
 	assert.False(t, w.preview.showCursor)
+}
+
+func TestSetInstanceClearsScrollModeOnSelectionChange(t *testing.T) {
+	w := newCellTestWindow(40, 10)
+	w.terminal = NewTerminalPane()
+
+	a := &session.Instance{Title: "a"}
+	b := &session.Instance{Title: "b"}
+	w.SetInstance(a)
+
+	w.preview.isScrolling = true
+	w.terminal.isScrolling = true
+
+	// Moving the selection must not leave the new session rendering the old
+	// session's frozen snapshot.
+	w.SetInstance(b)
+	assert.False(t, w.preview.isScrolling, "preview scroll mode survived a selection change")
+	assert.False(t, w.terminal.isScrolling, "terminal scroll mode survived a selection change")
+}
+
+func TestSetInstanceClearsScrollModeForPausedInstance(t *testing.T) {
+	w := newCellTestWindow(40, 10)
+	a := &session.Instance{Title: "a"}
+	w.SetInstance(a)
+	w.preview.isScrolling = true
+
+	// ResetToNormalMode declines a paused instance, so clearing must not depend on it.
+	w.SetInstance(&session.Instance{Title: "b", Status: session.Paused})
+	assert.False(t, w.preview.isScrolling, "scroll mode survived switching to a paused session")
+}
+
+func TestSetInstanceSameInstanceKeepsScrollMode(t *testing.T) {
+	w := newCellTestWindow(40, 10)
+	a := &session.Instance{Title: "a"}
+	w.SetInstance(a)
+	w.preview.isScrolling = true
+
+	// The 100ms tick re-sets the same instance constantly; that must not yank
+	// the user out of a scrollback they are reading.
+	w.SetInstance(a)
+	assert.True(t, w.preview.isScrolling, "scroll mode was cleared without a selection change")
 }

@@ -301,6 +301,18 @@ func (p *PreviewPane) ResetToNormalMode(instance *session.Instance) error {
 	return nil
 }
 
+// ClearScrollMode drops scroll state without needing a live instance to
+// re-capture from, so a selection change can never leave content frozen even
+// when the newly selected session is paused.
+func (p *PreviewPane) ClearScrollMode() {
+	if !p.isScrolling {
+		return
+	}
+	p.isScrolling = false
+	p.viewport.SetContent("")
+	p.viewport.GotoTop()
+}
+
 // -- Mouse selection ----------------------------------------------------------
 
 // SelectionStart begins a selection at the given content cell.
