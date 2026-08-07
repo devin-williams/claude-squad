@@ -42,8 +42,10 @@ type Workspace struct {
 	WorktreeDir string             `json:"worktree_dir,omitempty"`
 	Hooks       Hooks              `json:"hooks,omitempty"`
 	NonGit      bool               `json:"non_git,omitempty"`
-	CreatedAt   time.Time          `json:"created_at"`
-	LastUsedAt  time.Time          `json:"last_used_at"`
+	// BaseBranch overrides the global new_session_base branch for this workspace.
+	BaseBranch string    `json:"base_branch,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
 }
 
 // WorkspaceID derives a stable identifier from a (canonical repo path, remote URL) pair.

@@ -59,6 +59,33 @@ type Config struct {
 	// Discovery configures where the workspace picker looks for repos beyond
 	// the launch directory.
 	Discovery DiscoveryConfig `json:"discovery"`
+	// NewSessionBase configures where a new session's branch starts from.
+	NewSessionBase NewSessionBaseConfig `json:"new_session_base"`
+}
+
+// NewSessionBaseConfig controls the base commit a brand-new session's branch
+// is created from.
+type NewSessionBaseConfig struct {
+	// Fetch controls whether origin is fetched before resolving the base ref.
+	// Pointer so a config file that omits the key defaults to enabled rather
+	// than the bool zero value (false).
+	Fetch *bool `json:"fetch"`
+	// Branch is the branch to base new sessions on (tried as origin/<branch>,
+	// then local <branch>). Empty resolves the repo's default branch.
+	Branch string `json:"branch"`
+}
+
+// FetchEnabled returns whether fetching origin is enabled, defaulting to true
+// when unset.
+func (c NewSessionBaseConfig) FetchEnabled() bool {
+	if c.Fetch == nil {
+		return true
+	}
+	return *c.Fetch
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // DiscoveryConfig controls the workspace picker's filesystem discovery.
@@ -133,6 +160,7 @@ func DefaultConfig() *Config {
 		AutoYes:            false,
 		DaemonPollInterval: 1000,
 		Discovery:          DefaultDiscoveryConfig(),
+		NewSessionBase:     NewSessionBaseConfig{Fetch: boolPtr(true)},
 		BranchPrefix: func() string {
 			user, err := user.Current()
 			if err != nil || user == nil || user.Username == "" {
@@ -232,6 +260,11 @@ func LoadConfig() *Config {
 	}
 	if config.Discovery.Skip == nil {
 		config.Discovery.Skip = defaults.Skip
+	}
+
+	// Defaulted individually: an omitted `fetch` key must not disable fetching.
+	if config.NewSessionBase.Fetch == nil {
+		config.NewSessionBase.Fetch = boolPtr(true)
 	}
 
 	return &config

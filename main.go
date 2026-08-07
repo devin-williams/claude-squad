@@ -205,6 +205,9 @@ var (
 				}
 			}
 
+			fmt.Printf("\nNew session base: fetch=%v branch=%q (empty = repo default branch)\n",
+				cfg.NewSessionBase.FetchEnabled(), cfg.NewSessionBase.Branch)
+
 			currentDir, err := filepath.Abs(".")
 			if err == nil && git.IsGitRepo(currentDir) {
 				ws, err := resolveOrRegisterWorkspace(reg, currentDir)
@@ -216,6 +219,16 @@ var (
 					fmt.Printf("  worktree root: %s\n", wtRoot)
 					if ws.Hooks.PostWorktree != "" {
 						fmt.Printf("  post_worktree: %s\n", ws.Hooks.PostWorktree)
+					}
+					effectiveBranch := cfg.NewSessionBase.Branch
+					if ws.BaseBranch != "" {
+						fmt.Printf("  base_branch:   %s (workspace override)\n", ws.BaseBranch)
+						effectiveBranch = ws.BaseBranch
+					}
+					if ref, sha, err := git.ResolveNewSessionBase(currentDir, effectiveBranch); err == nil {
+						fmt.Printf("  resolved base: %s -> %s\n", ref, sha)
+					} else {
+						fmt.Printf("  resolved base: error: %v\n", err)
 					}
 					for _, p := range ws.Profiles {
 						fmt.Printf("\n  Profile %q -> %s\n", p.Name, p.Program)

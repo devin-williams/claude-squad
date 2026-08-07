@@ -32,6 +32,18 @@ type GitWorktree struct {
 	// isExistingBranch is true if the branch existed before the session was created.
 	// When true, the branch will not be deleted on cleanup.
 	isExistingBranch bool
+	// baseFetch and baseBranch configure how setupNewWorktree resolves its
+	// starting commit. Creation-time only, so they are not part of
+	// GitWorktreeData/storage.
+	baseFetch  bool
+	baseBranch string
+}
+
+// SetNewSessionBase configures the fetch/branch behavior setupNewWorktree
+// uses to resolve its starting commit. Must be called before Setup().
+func (g *GitWorktree) SetNewSessionBase(fetch bool, branch string) {
+	g.baseFetch = fetch
+	g.baseBranch = branch
 }
 
 func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string, isExistingBranch bool) *GitWorktree {

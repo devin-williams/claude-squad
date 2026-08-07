@@ -99,8 +99,10 @@ func (g *GitWorktree) setupNewWorktree() error {
 		_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
 	}
 
-	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
-	if err != nil {
+	// Preserve the brand-new-repo error before attempting base ref resolution,
+	// since resolveBaseCommit's own HEAD fallback would otherwise surface a
+	// less helpful error from a candidate ref instead of this one.
+	if _, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD"); err != nil {
 		if strings.Contains(err.Error(), "fatal: ambiguous argument 'HEAD'") ||
 			strings.Contains(err.Error(), "fatal: not a valid object name") ||
 			strings.Contains(err.Error(), "fatal: HEAD: not a valid object name") {
@@ -108,15 +110,18 @@ func (g *GitWorktree) setupNewWorktree() error {
 		}
 		return fmt.Errorf("failed to get HEAD commit hash: %w", err)
 	}
-	headCommit := strings.TrimSpace(string(output))
-	g.baseCommitSHA = headCommit
 
-	// Create a new worktree from the HEAD commit
+	baseCommit, err := resolveBaseCommit(g.repoPath, BaseRefOptions{Fetch: g.baseFetch, Branch: g.baseBranch})
+	if err != nil {
+		return fmt.Errorf("failed to resolve base commit: %w", err)
+	}
+	g.baseCommitSHA = baseCommit
+
+	// Create a new worktree from the resolved base commit.
 	// Otherwise, we'll inherit uncommitted changes from the previous worktree.
 	// This way, we can start the worktree with a clean slate.
-	// TODO: we might want to give an option to use main/master instead of the current branch.
-	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
-		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, baseCommit); err != nil {
+		return fmt.Errorf("failed to create worktree from commit %s: %w", baseCommit, err)
 	}
 
 	return nil

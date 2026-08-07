@@ -292,6 +292,14 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			if err != nil {
 				return fmt.Errorf("failed to create git worktree: %w", err)
 			}
+			cfg := config.LoadConfig()
+			baseBranch := cfg.NewSessionBase.Branch
+			if i.WorkspaceID != "" {
+				if ws := config.LoadWorkspaceRegistry().Get(i.WorkspaceID); ws != nil && ws.BaseBranch != "" {
+					baseBranch = ws.BaseBranch
+				}
+			}
+			gitWorktree.SetNewSessionBase(cfg.NewSessionBase.FetchEnabled(), baseBranch)
 			i.gitWorktree = gitWorktree
 			i.Branch = branchName
 		}

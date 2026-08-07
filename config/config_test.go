@@ -351,3 +351,31 @@ func TestLoadConfigDefaultsDiscoveryFieldsIndependently(t *testing.T) {
 		t.Fatal("skip should default when only roots is set")
 	}
 }
+
+func TestLoadConfigDefaultsNewSessionBaseFetchWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(ConfigHomeEnvVar, dir)
+	path := filepath.Join(dir, ConfigFileName)
+	if err := os.WriteFile(path, []byte(`{"default_program":"test-claude"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig()
+	if !cfg.NewSessionBase.FetchEnabled() {
+		t.Fatal("fetch should default to enabled when new_session_base is omitted from config")
+	}
+}
+
+func TestLoadConfigHonorsExplicitFetchFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(ConfigHomeEnvVar, dir)
+	path := filepath.Join(dir, ConfigFileName)
+	if err := os.WriteFile(path, []byte(`{"new_session_base":{"fetch":false}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig()
+	if cfg.NewSessionBase.FetchEnabled() {
+		t.Fatal("an explicit fetch:false should stay disabled")
+	}
+}
