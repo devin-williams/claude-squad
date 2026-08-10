@@ -468,46 +468,55 @@ func (l *List) renderEmptyState() string {
 // line index of the currently-selected instance, used as the scroll anchor.
 // Returns -1 for the anchor when the selection is outside any visible group.
 func (l *List) renderBody() ([]string, int) {
-	groups := l.groupedItems()
 	hasMultipleRepos := len(l.repos) > 1
+	reg := config.LoadWorkspaceRegistry()
+	counts := map[string]int{}
+	for _, inst := range l.items {
+		counts[inst.WorkspaceID]++
+	}
+
 	var lines []string
 	selectedLine := -1
 	visibleIdx := 0
 	first := true
+	haveGroup := false
+	var currentGroupID string
 
-	for _, g := range groups {
-		if l.viewFilter != "" && g.id != l.viewFilter {
+	for i, item := range l.items {
+		if l.viewFilter != "" && item.WorkspaceID != l.viewFilter {
 			continue
 		}
-		if !first {
-			lines = append(lines, "")
-		}
-		first = false
+		if !haveGroup || item.WorkspaceID != currentGroupID {
+			if !first {
+				lines = append(lines, "")
+			}
+			first = false
+			haveGroup = true
+			currentGroupID = item.WorkspaceID
 
-		collapsed := l.collapsedWorkspaces[g.id]
-		marker := "▾"
-		if collapsed {
-			marker = "▸"
+			collapsed := l.collapsedWorkspaces[currentGroupID]
+			marker := "▾"
+			if collapsed {
+				marker = "▸"
+			}
+			label := workspaceLabel(reg, currentGroupID)
+			lines = append(lines, workspaceHeaderStyle.Render(fmt.Sprintf("%s %s (%d)", marker, label, counts[currentGroupID])))
 		}
-		lines = append(lines, workspaceHeaderStyle.Render(fmt.Sprintf("%s %s (%d)", marker, g.label, len(g.items))))
-		if collapsed {
+		if l.collapsedWorkspaces[currentGroupID] {
 			continue
 		}
-		for j, item := range g.items {
-			visibleIdx++
-			origIdx := l.indexInItems(item)
-			itemStartLine := len(lines)
-			// Item separator: blank line between item rows so the rendered
-			// title/branch pairs visually breathe.
-			lines = append(lines, "")
-			rendered := l.renderer.Render(item, visibleIdx, origIdx == l.selectedIdx, hasMultipleRepos)
-			for _, rl := range strings.Split(rendered, "\n") {
-				lines = append(lines, rl)
-			}
-			if origIdx == l.selectedIdx {
-				selectedLine = itemStartLine
-			}
-			_ = j
+
+		visibleIdx++
+		itemStartLine := len(lines)
+		// Item separator: blank line between item rows so the rendered
+		// title/branch pairs visually breathe.
+		lines = append(lines, "")
+		rendered := l.renderer.Render(item, visibleIdx, i == l.selectedIdx, hasMultipleRepos)
+		for _, rl := range strings.Split(rendered, "\n") {
+			lines = append(lines, rl)
+		}
+		if i == l.selectedIdx {
+			selectedLine = itemStartLine
 		}
 	}
 	return lines, selectedLine
@@ -629,54 +638,82 @@ func plural(n int, word string) string {
 	return word + "s"
 }
 
-// indexInItems returns the index of inst within l.items, or -1 if not found.
-// Used by String() to map a (group, item) pair back to the canonical index used by selectedIdx.
-func (l *List) indexInItems(inst *session.Instance) int {
-	for i, it := range l.items {
-		if it == inst {
-			return i
-		}
-	}
-	return -1
-}
-
 type instanceGroup struct {
 	id    string
 	label string
 	items []*session.Instance
 }
 
-// groupedItems partitions l.items by workspace id (preserving the existing
-// item order within each group). Groups are returned in the same order their
-// first instance appears in l.items, so adding/selecting doesn't reshuffle.
+// groupedItems partitions l.items into contiguous runs by workspace id. It is
+// purely derived from l.items, which reorderItems keeps sorted into display
+// order, so this never disagrees with what renderBody walks.
 func (l *List) groupedItems() []instanceGroup {
 	if len(l.items) == 0 {
 		return nil
 	}
 	reg := config.LoadWorkspaceRegistry()
-	labels := make(map[string]string)
-	order := []string{}
-	groups := map[string][]*session.Instance{}
+	var out []instanceGroup
 	for _, inst := range l.items {
 		key := inst.WorkspaceID
-		if _, ok := groups[key]; !ok {
-			order = append(order, key)
-			labels[key] = workspaceLabel(reg, key)
+		if len(out) == 0 || out[len(out)-1].id != key {
+			out = append(out, instanceGroup{id: key, label: workspaceLabel(reg, key)})
 		}
-		groups[key] = append(groups[key], inst)
+		out[len(out)-1].items = append(out[len(out)-1].items, inst)
 	}
-	out := make([]instanceGroup, 0, len(order))
-	for _, k := range order {
-		out = append(out, instanceGroup{id: k, label: labels[k], items: groups[k]})
+	return out
+}
+
+// reorderItems sorts l.items into display order: grouped by WorkspaceID, groups
+// in first-appearance order with unknown-workspace groups pushed last, and
+// insertion order preserved within each group. It is the single source of
+// truth for ordering — renderBody and groupedItems both walk this order
+// directly rather than maintaining a separate index.
+//
+// Call this whenever the item set or any WorkspaceID assignment changes.
+func (l *List) reorderItems() {
+	var selected *session.Instance
+	if l.selectedIdx >= 0 && l.selectedIdx < len(l.items) {
+		selected = l.items[l.selectedIdx]
 	}
-	// Stable secondary sort: groups with a known workspace before unknown.
-	sort.SliceStable(out, func(i, j int) bool {
-		if (out[i].label == unknownWorkspaceLabel) != (out[j].label == unknownWorkspaceLabel) {
-			return out[j].label == unknownWorkspaceLabel
+
+	reg := config.LoadWorkspaceRegistry()
+	var order []string
+	seen := map[string]bool{}
+	labels := map[string]string{}
+	for _, inst := range l.items {
+		key := inst.WorkspaceID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		order = append(order, key)
+		labels[key] = workspaceLabel(reg, key)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		iUnknown := labels[order[i]] == unknownWorkspaceLabel
+		jUnknown := labels[order[j]] == unknownWorkspaceLabel
+		if iUnknown != jUnknown {
+			return jUnknown
 		}
 		return false
 	})
-	return out
+	rank := make(map[string]int, len(order))
+	for i, k := range order {
+		rank[k] = i
+	}
+
+	sort.SliceStable(l.items, func(i, j int) bool {
+		return rank[l.items[i].WorkspaceID] < rank[l.items[j].WorkspaceID]
+	})
+
+	if selected != nil {
+		for i, inst := range l.items {
+			if inst == selected {
+				l.selectedIdx = i
+				break
+			}
+		}
+	}
 }
 
 const unknownWorkspaceLabel = "(unknown workspace)"
@@ -788,6 +825,7 @@ func (l *List) rmRepo(repo string) {
 // When creating a new one and entering the name, you want to call the finalizer once the name is done.
 func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 	l.items = append(l.items, instance)
+	l.reorderItems()
 	// The finalizer registers the repo name once the instance is started.
 	return func() {
 		repoName, err := instance.RepoName()
@@ -826,9 +864,14 @@ func (l *List) SelectInstance(target *session.Instance) {
 	}
 }
 
-// MoveUp swaps the selected instance with the one above it.
+// MoveUp swaps the selected instance with the one above it. It refuses to
+// cross a workspace group boundary — l.items is kept in grouped display
+// order, and reorderItems would just snap a cross-group move back anyway.
 func (l *List) MoveUp() bool {
 	if l.selectedIdx <= 0 || len(l.items) < 2 {
+		return false
+	}
+	if l.items[l.selectedIdx].WorkspaceID != l.items[l.selectedIdx-1].WorkspaceID {
 		return false
 	}
 	l.items[l.selectedIdx], l.items[l.selectedIdx-1] = l.items[l.selectedIdx-1], l.items[l.selectedIdx]
@@ -836,9 +879,13 @@ func (l *List) MoveUp() bool {
 	return true
 }
 
-// MoveDown swaps the selected instance with the one below it.
+// MoveDown swaps the selected instance with the one below it. Same group
+// boundary constraint as MoveUp.
 func (l *List) MoveDown() bool {
 	if l.selectedIdx >= len(l.items)-1 || len(l.items) < 2 {
+		return false
+	}
+	if l.items[l.selectedIdx].WorkspaceID != l.items[l.selectedIdx+1].WorkspaceID {
 		return false
 	}
 	l.items[l.selectedIdx], l.items[l.selectedIdx+1] = l.items[l.selectedIdx+1], l.items[l.selectedIdx]
