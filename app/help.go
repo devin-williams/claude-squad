@@ -57,6 +57,7 @@ func (h helpTypeGeneral) toContent() string {
 		headerStyle.Render("Workspaces:"),
 		keyStyle.Render("n")+descStyle.Render("         - Type to filter registered repos, or type a path (e.g. ~/.dotfiles)"),
 		keyStyle.Render("W")+descStyle.Render("         - Pick which workspace new sessions land in"),
+		keyStyle.Render("V")+descStyle.Render("         - Toggle the list between all sessions and the active workspace's"),
 		keyStyle.Render("z")+descStyle.Render("         - Fold/unfold the workspace group containing the selection"),
 		"",
 		headerStyle.Render("Other:"),

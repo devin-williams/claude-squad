@@ -91,6 +91,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyShiftDown:         menuGroupAction,
 	keys.KeySwitchWorkspace:   menuGroupWorkspace,
 	keys.KeyCollapseWorkspace: menuGroupWorkspace,
+	keys.KeyViewFilter:        menuGroupWorkspace,
 	keys.KeyTab:               menuGroupSystem,
 	keys.KeyHelp:              menuGroupSystem,
 	keys.KeyQuit:              menuGroupSystem,
@@ -192,7 +193,7 @@ func (m *Menu) addInstanceOptions() {
 
 	// Workspace group: workspace-management keys, surfaced in every state so
 	// users discover them without opening the full help screen.
-	workspaceGroup := []keys.KeyName{keys.KeySwitchWorkspace}
+	workspaceGroup := []keys.KeyName{keys.KeySwitchWorkspace, keys.KeyViewFilter}
 
 	// System group
 	systemGroup := []keys.KeyName{keys.KeyTab, keys.KeyHelp, keys.KeyQuit}

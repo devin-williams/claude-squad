@@ -708,3 +708,45 @@ func TestInPlaceInstance_PushAndCheckoutRefused(t *testing.T) {
 		assert.Nil(t, homeModel.confirmationOverlay)
 	})
 }
+
+func newViewFilterHome() *home {
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	return &home{
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      ui.NewList(&sp, false),
+		menu:      ui.NewMenu(),
+		errBox:    ui.NewErrBox(),
+	}
+}
+
+// pressKey re-arms keySent so the press reaches the handler rather than being
+// swallowed by menu highlighting's re-dispatch.
+func (m *home) pressKey(r rune) {
+	m.keySent = true
+	m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+}
+
+func TestViewFilterTogglesAndPickingWorkspaceDoesNotFilter(t *testing.T) {
+	h := newViewFilterHome()
+	h.workspaceID = "ws-1"
+
+	// Picking a workspace must not strand every other session out of sight.
+	h.applyWorkspaceFocus("ws-1")
+	assert.Equal(t, "", h.list.GetViewFilter(), "picking a workspace should not filter the list")
+
+	h.pressKey('V')
+	assert.Equal(t, "ws-1", h.list.GetViewFilter(), "V should narrow to the active workspace")
+
+	h.pressKey('V')
+	assert.Equal(t, "", h.list.GetViewFilter(), "V again should widen back to all sessions")
+}
+
+func TestViewFilterWithNoActiveWorkspaceIsRefused(t *testing.T) {
+	h := newViewFilterHome()
+	h.workspaceID = ""
+
+	h.pressKey('V')
+	assert.Equal(t, "", h.list.GetViewFilter(), "nothing to filter to without an active workspace")
+}

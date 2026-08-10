@@ -189,11 +189,11 @@ func (m *home) resolveWorkspaceProgram() (program, profileName string) {
 	return ws.Profiles[0].Program, ws.Profiles[0].Name
 }
 
-// applyWorkspaceFocus updates both the view filter and the active workspace
-// (i.e. the "new sessions land here" target) in one shot. Used by the
-// workspace picker so switching workspaces and filtering the list stay aligned.
+// applyWorkspaceFocus sets the active workspace — where new sessions land. It
+// deliberately does not touch the view filter: picking a workspace used to
+// narrow the list with no way to widen it again, which stranded every other
+// session out of sight. Narrowing is V's job.
 func (m *home) applyWorkspaceFocus(id string) {
-	m.list.SetViewFilter(id)
 	m.workspaceID = id
 	reg := config.LoadWorkspaceRegistry()
 	if ws := reg.Get(id); ws != nil {
@@ -1006,6 +1006,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.openWorkspacePicker(workspacePickerSwitch)
 	case keys.KeyCollapseWorkspace:
 		m.list.ToggleCollapseCurrent()
+		return m, nil
+	case keys.KeyViewFilter:
+		if m.list.GetViewFilter() != "" {
+			m.list.SetViewFilter("")
+			return m, nil
+		}
+		if m.workspaceID == "" {
+			return m, m.handleError(fmt.Errorf("no active workspace to filter to — press W to pick one"))
+		}
+		m.list.SetViewFilter(m.workspaceID)
 		return m, nil
 	case keys.KeyFocus:
 		selected := m.list.GetSelectedInstance()

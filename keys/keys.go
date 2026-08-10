@@ -37,6 +37,8 @@ const (
 	KeySwitchWorkspace
 	// KeyCollapseWorkspace toggles collapse on the currently-selected session's workspace group.
 	KeyCollapseWorkspace
+	// KeyViewFilter toggles the list between all sessions and only the active workspace's.
+	KeyViewFilter
 	// KeyFocus enters focus mode: keystrokes are forwarded to the selected
 	// session from the preview, without a full attach.
 	KeyFocus
@@ -69,6 +71,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"?":          KeyHelp,
 	"W":          KeySwitchWorkspace,
 	"z":          KeyCollapseWorkspace,
+	"V":          KeyViewFilter,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -140,6 +143,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyCollapseWorkspace: key.NewBinding(
 		key.WithKeys("z"),
 		key.WithHelp("z", "fold group"),
+	),
+	KeyViewFilter: key.NewBinding(
+		key.WithKeys("V"),
+		key.WithHelp("V", "filter to workspace"),
 	),
 
 	KeyMoveUp: key.NewBinding(
