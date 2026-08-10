@@ -102,3 +102,23 @@ func TestRender_InPlaceInstanceShowsHomeShortenedPath(t *testing.T) {
 	require.Contains(t, rendered, "~/dotfiles")
 	require.NotContains(t, rendered, branchIcon)
 }
+
+func TestWorkspaceIDs(t *testing.T) {
+	s := spinner.New()
+	l := NewList(&s, false)
+	for _, ws := range []string{"ws-b", "ws-a", "ws-b", "ws-c", "ws-a"} {
+		inst, err := session.NewInstance(session.InstanceOptions{Title: ws + "-s", Path: ".", Program: "echo"})
+		require.NoError(t, err)
+		inst.WorkspaceID = ws
+		l.AddInstance(inst)
+	}
+
+	// First-appearance order, duplicates collapsed — stable and matches what
+	// the user sees rather than an alphabetical reshuffle.
+	require.Equal(t, []string{"ws-b", "ws-a", "ws-c"}, l.WorkspaceIDs())
+}
+
+func TestWorkspaceIDsEmpty(t *testing.T) {
+	s := spinner.New()
+	require.Empty(t, NewList(&s, false).WorkspaceIDs())
+}

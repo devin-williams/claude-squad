@@ -163,6 +163,21 @@ func (l *List) WorkspaceCount() int {
 	return len(seen)
 }
 
+// WorkspaceIDs returns the distinct workspace ids present in the list, in
+// first-appearance order.
+func (l *List) WorkspaceIDs() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, inst := range l.items {
+		if seen[inst.WorkspaceID] {
+			continue
+		}
+		seen[inst.WorkspaceID] = true
+		out = append(out, inst.WorkspaceID)
+	}
+	return out
+}
+
 // isItemVisible reports whether the given instance is currently rendered
 // (i.e. passes the view filter and is not inside a collapsed group).
 func (l *List) isItemVisible(inst *session.Instance) bool {

@@ -39,6 +39,10 @@ const (
 	KeyCollapseWorkspace
 	// KeyViewFilter toggles the list between all sessions and only the active workspace's.
 	KeyViewFilter
+	// KeyPrevWorkspace cycles the view filter to the previous workspace stop (All -> ws1 -> ws2 -> ...).
+	KeyPrevWorkspace
+	// KeyNextWorkspace cycles the view filter to the next workspace stop.
+	KeyNextWorkspace
 	// KeyFocus enters focus mode: keystrokes are forwarded to the selected
 	// session from the preview, without a full attach.
 	KeyFocus
@@ -72,6 +76,8 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"W":          KeySwitchWorkspace,
 	"z":          KeyCollapseWorkspace,
 	"V":          KeyViewFilter,
+	"w":          KeyPrevWorkspace,
+	"e":          KeyNextWorkspace,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -94,7 +100,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeyEnter: key.NewBinding(
 		key.WithKeys("enter"),
-		key.WithHelp("↵", "type here"),
+		key.WithHelp("↵", "type"),
 	),
 	KeyAttach: key.NewBinding(
 		key.WithKeys("o"),
@@ -118,7 +124,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeySubmit: key.NewBinding(
 		key.WithKeys("p"),
-		key.WithHelp("p", "push branch"),
+		key.WithHelp("p", "push"),
 	),
 	KeyPrompt: key.NewBinding(
 		key.WithKeys("N"),
@@ -130,7 +136,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeyTab: key.NewBinding(
 		key.WithKeys("tab"),
-		key.WithHelp("tab", "switch tab"),
+		key.WithHelp("tab", "tabs"),
 	),
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
@@ -138,7 +144,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeySwitchWorkspace: key.NewBinding(
 		key.WithKeys("W"),
-		key.WithHelp("W", "pick workspace"),
+		key.WithHelp("W", "pick ws"),
 	),
 	KeyCollapseWorkspace: key.NewBinding(
 		key.WithKeys("z"),
@@ -146,7 +152,15 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeyViewFilter: key.NewBinding(
 		key.WithKeys("V"),
-		key.WithHelp("V", "filter to workspace"),
+		key.WithHelp("V", "filter"),
+	),
+	KeyPrevWorkspace: key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "prev"),
+	),
+	KeyNextWorkspace: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "next"),
 	),
 
 	KeyMoveUp: key.NewBinding(

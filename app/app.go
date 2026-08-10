@@ -205,6 +205,36 @@ func (m *home) applyWorkspaceFocus(id string) {
 	}
 }
 
+// cycleWorkspace moves the view filter to the previous (delta -1) or next
+// (delta +1) stop in the cycle All -> ws1 -> ws2 -> ... -> All, wrapping at
+// both ends. Landing on a workspace also makes it the active workspace via
+// applyWorkspaceFocus; landing on All only clears the filter.
+func (m *home) cycleWorkspace(delta int) {
+	ids := m.list.WorkspaceIDs()
+	if len(ids) == 0 {
+		return
+	}
+
+	// Position 0 is the All stop; positions 1..len(ids) are the workspaces.
+	pos := 0
+	for i, id := range ids {
+		if id == m.list.GetViewFilter() {
+			pos = i + 1
+			break
+		}
+	}
+
+	n := len(ids) + 1
+	pos = ((pos+delta)%n + n) % n
+
+	if pos == 0 {
+		m.list.SetViewFilter("")
+		return
+	}
+	m.applyWorkspaceFocus(ids[pos-1])
+	m.list.SetViewFilter(ids[pos-1])
+}
+
 // workspacePickerItems builds the picker rows from the registry, sorted
 // most-recently-used first so an empty filter + Enter picks the most recent.
 func (m *home) workspacePickerItems() []overlay.WorkspaceItem {
@@ -1016,6 +1046,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(fmt.Errorf("no active workspace to filter to — press W to pick one"))
 		}
 		m.list.SetViewFilter(m.workspaceID)
+		return m, nil
+	case keys.KeyPrevWorkspace:
+		m.cycleWorkspace(-1)
+		return m, nil
+	case keys.KeyNextWorkspace:
+		m.cycleWorkspace(1)
 		return m, nil
 	case keys.KeyFocus:
 		selected := m.list.GetSelectedInstance()

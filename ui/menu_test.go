@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +36,7 @@ func TestMenuDefaultAdvertisesEnterAndAttach(t *testing.T) {
 	out := stripANSI(m.String())
 	// Enter types into the preview and o attaches, so the menu must not still
 	// advertise f as the way to reach the session.
-	assert.Contains(t, out, "type here")
+	assert.Contains(t, out, "↵ type")
 	assert.Contains(t, out, "o attach")
 	assert.NotContains(t, out, "f focus")
 }
@@ -53,4 +54,26 @@ func stripANSI(s string) string {
 		i++
 	}
 	return b.String()
+}
+
+func TestMenuFitsCommonWidths(t *testing.T) {
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title:   "menu-width",
+		Path:    ".",
+		Program: "bash",
+	})
+	require.NoError(t, err)
+
+	// 160 is the narrowest width the full menu is committed to fitting. It
+	// overflows below that; shortening a label or dropping one from the bar
+	// (they stay in the ? help) is the lever if that becomes a problem.
+	for _, width := range []int{160, 200} {
+		m := NewMenu()
+		m.SetSize(width, 1)
+		m.SetInstance(inst)
+		line := strings.TrimSpace(stripANSI(m.String()))
+		t.Logf("width %d (%d visible cols): %s", width, runewidth.StringWidth(line), line)
+		assert.LessOrEqual(t, runewidth.StringWidth(line), width,
+			"menu overflows at width %d — the workspace group is crowded, shorten a label", width)
+	}
 }

@@ -750,3 +750,64 @@ func TestViewFilterWithNoActiveWorkspaceIsRefused(t *testing.T) {
 	h.pressKey('V')
 	assert.Equal(t, "", h.list.GetViewFilter(), "nothing to filter to without an active workspace")
 }
+
+func addWorkspaceSessions(t *testing.T, h *home, workspaceIDs ...string) {
+	t.Helper()
+	for i, ws := range workspaceIDs {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title:   fmt.Sprintf("s%d", i),
+			Path:    ".",
+			Program: "echo",
+		})
+		require.NoError(t, err)
+		inst.WorkspaceID = ws
+		h.list.AddInstance(inst)
+	}
+}
+
+func TestCycleWorkspaceForwardWrapsThroughAll(t *testing.T) {
+	h := newViewFilterHome()
+	addWorkspaceSessions(t, h, "ws-a", "ws-b")
+
+	h.pressKey('e')
+	assert.Equal(t, "ws-a", h.list.GetViewFilter())
+	assert.Equal(t, "ws-a", h.workspaceID, "landing on a workspace should also make it active")
+
+	h.pressKey('e')
+	assert.Equal(t, "ws-b", h.list.GetViewFilter())
+	assert.Equal(t, "ws-b", h.workspaceID)
+
+	// Past the last workspace is the All stop, which must not clobber the
+	// active workspace — All is not somewhere new sessions can land.
+	h.pressKey('e')
+	assert.Equal(t, "", h.list.GetViewFilter())
+	assert.Equal(t, "ws-b", h.workspaceID, "All should leave the active workspace alone")
+}
+
+func TestCycleWorkspaceBackwardFromAllWrapsToLast(t *testing.T) {
+	h := newViewFilterHome()
+	addWorkspaceSessions(t, h, "ws-a", "ws-b")
+
+	h.pressKey('w')
+	assert.Equal(t, "ws-b", h.list.GetViewFilter(), "w from All should wrap to the last workspace")
+	assert.Equal(t, "ws-b", h.workspaceID)
+}
+
+func TestCycleWorkspaceTreatsStaleFilterAsAll(t *testing.T) {
+	h := newViewFilterHome()
+	addWorkspaceSessions(t, h, "ws-a")
+	// A workspace whose last session was killed is no longer a cycle stop.
+	h.list.SetViewFilter("ws-gone")
+
+	h.pressKey('e')
+	assert.Equal(t, "ws-a", h.list.GetViewFilter(), "a stale filter should resolve to All, so e lands on the first")
+}
+
+func TestCycleWorkspaceWithNoSessionsIsNoOp(t *testing.T) {
+	h := newViewFilterHome()
+
+	h.pressKey('e')
+	h.pressKey('w')
+	assert.Equal(t, "", h.list.GetViewFilter())
+	assert.Equal(t, "", h.workspaceID)
+}
