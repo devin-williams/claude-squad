@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"claude-squad/config"
 	"claude-squad/session"
 	"os"
 	"path/filepath"
@@ -348,4 +349,89 @@ func TestRenderBody_SkipsCollapsedAndFiltered(t *testing.T) {
 	require.Same(t, a2, l.GetSelectedInstance())
 	l.Down()
 	require.Same(t, a1, l.GetSelectedInstance(), "Down should wrap within the filtered ws-a group, skipping b1")
+}
+
+// seedRegistry points $CLAUDE_SQUAD_HOME at a fresh tmp dir and writes a
+// registry holding the given workspace ids (display name == id).
+func seedRegistry(t *testing.T, ids ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	prev := os.Getenv(config.ConfigHomeEnvVar)
+	require.NoError(t, os.Setenv(config.ConfigHomeEnvVar, dir))
+	t.Cleanup(func() {
+		if prev == "" {
+			_ = os.Unsetenv(config.ConfigHomeEnvVar)
+		} else {
+			_ = os.Setenv(config.ConfigHomeEnvVar, prev)
+		}
+	})
+
+	reg := &config.WorkspaceRegistry{}
+	for _, id := range ids {
+		require.NoError(t, reg.Upsert(config.Workspace{ID: id, DisplayName: id, RepoPath: filepath.Join(dir, id)}))
+	}
+	require.NoError(t, reg.Save())
+}
+
+func tabIDs(l *List) []string {
+	tabs := l.workspaceTabDescriptors(l.groupedItems())
+	out := make([]string, 0, len(tabs))
+	for _, t := range tabs {
+		out = append(out, t.id)
+	}
+	return out
+}
+
+// The registry accumulates every repo ever used, so a tab per registered
+// workspace clutters the strip with destinations that can only show an empty
+// list.
+func TestWorkspaceTabs_OmitWorkspacesWithoutSessions(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b", "ws-c")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
+	l.AddInstance(newWorkspacedInstance(t, "c1", "ws-c"))
+
+	require.Equal(t, []string{"ws-a", "ws-c"}, tabIDs(l), "ws-b holds no sessions and must not get a tab")
+	require.Contains(t, l.renderCountSummary(l.workspaceTabDescriptors(l.groupedItems())), "2 workspaces")
+}
+
+// The active workspace is where new sessions land, so it stays visible even
+// while empty — otherwise the V toggle has no tab to highlight.
+func TestWorkspaceTabs_KeepEmptyActiveWorkspace(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
+	l.SetActiveWorkspaceID("ws-b")
+
+	require.Equal(t, []string{"ws-a", "ws-b"}, tabIDs(l))
+}
+
+// A tab is still owed to instances whose workspace was removed from the
+// registry, or they become unreachable by filter.
+func TestWorkspaceTabs_KeepOrphanWorkspaces(t *testing.T) {
+	seedRegistry(t, "ws-a")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
+	l.AddInstance(newWorkspacedInstance(t, "gone", "ws-deleted"))
+
+	require.Equal(t, []string{"ws-a", "ws-deleted"}, tabIDs(l))
+}
+
+// Filtering must not hide the other tabs, or there is no way to filter back.
+func TestWorkspaceTabs_SurviveViewFilter(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
+	l.AddInstance(newWorkspacedInstance(t, "b1", "ws-b"))
+	l.SetViewFilter("ws-a")
+
+	require.Equal(t, []string{"ws-a", "ws-b"}, tabIDs(l))
 }

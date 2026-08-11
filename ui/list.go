@@ -549,15 +549,26 @@ type tabDescriptor struct {
 	label string
 }
 
-// workspaceTabDescriptors returns the workspace tabs to render: the union of
-// workspaces present in the registry and any orphan WorkspaceIDs found in
-// l.items (so we still show a tab for instances whose workspace was deleted).
-// Order: registry order first, then orphan ids in their first-appearance order.
+// workspaceTabDescriptors returns the workspace tabs to render. Only workspaces
+// that actually hold sessions get a tab — the registry accumulates every repo
+// ever used, and tabbing to one with nothing in it can only show an empty list.
+// The active workspace is the one exception: it keeps its tab while empty so the
+// target for new sessions stays visible and V has something to toggle onto.
+// Order: registry order first, then orphan ids (workspace deleted out from under
+// live instances) in their first-appearance order.
 func (l *List) workspaceTabDescriptors(groups []instanceGroup) []tabDescriptor {
 	reg := config.LoadWorkspaceRegistry()
+	populated := make(map[string]struct{}, len(groups))
+	for _, g := range groups {
+		populated[g.id] = struct{}{}
+	}
+
 	seen := map[string]struct{}{}
-	out := make([]tabDescriptor, 0, len(reg.Workspaces)+len(groups))
+	out := make([]tabDescriptor, 0, len(groups)+1)
 	for _, w := range reg.Workspaces {
+		if _, ok := populated[w.ID]; !ok && w.ID != l.activeWorkspaceID {
+			continue
+		}
 		seen[w.ID] = struct{}{}
 		out = append(out, tabDescriptor{id: w.ID, label: w.DisplayName})
 	}
@@ -616,8 +627,8 @@ func (l *List) tabRender(label string, active bool) string {
 
 // renderCountSummary builds the "5 sessions · 3 workspaces" status line beneath
 // the tab bar (or "showing 2/5 sessions" when a view filter is active). The
-// workspace count comes from the tab bar so empty (registered, no sessions)
-// workspaces are reflected.
+// workspace count comes from the tab bar, so it counts workspaces holding
+// sessions rather than everything the registry remembers.
 func (l *List) renderCountSummary(tabs []tabDescriptor) string {
 	total := len(l.items)
 	wsCount := len(tabs)
