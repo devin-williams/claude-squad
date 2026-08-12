@@ -484,7 +484,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			if r.diffStats != nil && r.diffStats.Error != nil {
-				if !strings.Contains(r.diffStats.Error.Error(), "base commit SHA not set") {
+				// Throttled: a session whose worktree went missing fails this on
+				// every tick, and a few per second buries everything else in the log.
+				if !strings.Contains(r.diffStats.Error.Error(), "base commit SHA not set") && diffStatsLogThrottle.ShouldLog() {
 					log.WarningLog.Printf("could not update diff stats: %v", r.diffStats.Error)
 				}
 				r.instance.SetDiffStats(nil)
@@ -1343,6 +1345,10 @@ func (m *home) snapshotActiveInstances() []*session.Instance {
 
 // Diff and DiffNumstat both do a `git add -N .` index write, so at high instance counts the diff is throttled while the cheap tmux capture is not.
 const metadataDiffThrottle = 8
+
+// diffStatsLogThrottle rate-limits the diff-stat failure warning, which repeats
+// on every metadata tick for as long as the underlying cause persists.
+var diffStatsLogThrottle = log.NewEvery(30 * time.Second)
 
 // tickUpdateMetadataCmd returns a self-chaining Cmd that sleeps 500ms, then performs
 // expensive metadata I/O (tmux capture, git diff) in parallel background goroutines.

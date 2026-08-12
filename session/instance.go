@@ -268,6 +268,13 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
 		return fmt.Errorf("instance title cannot be empty")
 	}
+	// First-time setup builds a fresh worktree and overwrites i.gitWorktree, and
+	// its failure path kills the tmux session. Run against a live instance it
+	// destroys the running session instead of creating one, so refuse before any
+	// of that happens. Restore and resume pass false and are unaffected.
+	if firstTimeSetup && i.started {
+		return fmt.Errorf("instance %q is already running", i.Title)
+	}
 
 	var tmuxSession *tmux.TmuxSession
 	if i.tmuxSession != nil {
@@ -390,7 +397,11 @@ func (i *Instance) Kill() error {
 	// Always try to cleanup both resources, even if one fails
 	// Clean up tmux session first since it's using the git worktree
 	if i.tmuxSession != nil {
-		if err := i.tmuxSession.Close(); err != nil {
+		// A session that already died (crash, or an external tmux kill) cannot be
+		// killed again. Reporting that as a failure is what made such a row
+		// impossible to clear: the error looks like the kill did not happen.
+		alive := i.tmuxSession.DoesSessionExist()
+		if err := i.tmuxSession.Close(); err != nil && alive {
 			errs = append(errs, fmt.Errorf("failed to close tmux session: %w", err))
 		}
 	}

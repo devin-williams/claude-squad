@@ -1,12 +1,18 @@
 package session
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"claude-squad/cmd/cmd_test"
+	"claude-squad/config"
 	"claude-squad/log"
+	"claude-squad/session/tmux"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,4 +133,86 @@ func TestInPlaceInstance_GetGitWorktreeErrors(t *testing.T) {
 	wt, err := inst.GetGitWorktree()
 	require.Error(t, err)
 	assert.Nil(t, wt)
+}
+
+// startedTestInstance boots an instance against a throwaway repo with a mocked
+// tmux, i.e. the real session-create path, and returns it plus its repo path.
+func startedTestInstance(t *testing.T, title string) (*Instance, string) {
+	t.Helper()
+	log.Initialize(false)
+	t.Cleanup(log.Close)
+
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	repoPath := initTestRepo(t)
+	inst, err := NewInstance(InstanceOptions{Title: title, Path: repoPath, Program: "echo"})
+	require.NoError(t, err)
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps(title, "echo", "", &recordingPtyFactory{t: t}, newTmuxMockExec()))
+	require.NoError(t, inst.Start(true))
+	t.Cleanup(func() { _ = inst.Kill() })
+	return inst, repoPath
+}
+
+// TestStart_RefusesFirstTimeSetupOnRunningInstance pins the destructive case.
+// First-time setup overwrites i.gitWorktree with a fresh path and its failure
+// path runs Kill, so on a live instance it tears down the running session and
+// deletes its branch instead of creating anything. Nothing should call it that
+// way, but a list-ordering bug did, and the damage was silent.
+func TestStart_RefusesFirstTimeSetupOnRunningInstance(t *testing.T) {
+	inst, repoPath := startedTestInstance(t, "already-running")
+
+	wt, err := inst.GetGitWorktree()
+	require.NoError(t, err)
+	pathBefore := wt.GetWorktreePath()
+	branchBefore := wt.GetBranchName()
+
+	err = inst.Start(true)
+	require.Error(t, err, "first-time setup on a running instance must be refused")
+	assert.Contains(t, err.Error(), "already running")
+
+	wtAfter, err := inst.GetGitWorktree()
+	require.NoError(t, err)
+	assert.Equal(t, pathBefore, wtAfter.GetWorktreePath(), "the live worktree must not be swapped out")
+	_, statErr := os.Stat(pathBefore)
+	assert.NoError(t, statErr, "the live worktree must still be on disk")
+
+	out, err := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "refs/heads/"+branchBefore).CombinedOutput()
+	assert.NoError(t, err, "the live branch must not be deleted: %s", out)
+}
+
+// TestKill_SucceedsWhenTmuxSessionAlreadyGone covers the session whose tmux
+// died underneath it. Reporting "failed to close tmux session" for a session
+// that is already gone is what made such a row impossible to clear.
+func TestKill_SucceedsWhenTmuxSessionAlreadyGone(t *testing.T) {
+	inst, _ := startedTestInstance(t, "orphan")
+
+	// has-session errors (gone) and kill-session errors (nothing to kill).
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("orphan", "echo", "", &recordingPtyFactory{t: t},
+		cmd_test.MockCmdExec{
+			RunFunc:    func(*exec.Cmd) error { return fmt.Errorf("no such session") },
+			OutputFunc: func(*exec.Cmd) ([]byte, error) { return nil, fmt.Errorf("no such session") },
+		}))
+
+	assert.NoError(t, inst.Kill(), "killing a session whose tmux is already gone must succeed")
+}
+
+// The converse: a live session that genuinely refuses to close must still error.
+func TestKill_ReportsFailureWhenSessionIsAlive(t *testing.T) {
+	inst, _ := startedTestInstance(t, "stubborn")
+
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("stubborn", "echo", "", &recordingPtyFactory{t: t},
+		cmd_test.MockCmdExec{
+			RunFunc: func(c *exec.Cmd) error {
+				if strings.Contains(c.String(), "has-session") {
+					return nil // alive
+				}
+				return fmt.Errorf("kill refused")
+			},
+			OutputFunc: func(*exec.Cmd) ([]byte, error) { return []byte(""), nil },
+		}))
+
+	err := inst.Kill()
+	require.Error(t, err, "a live session that fails to close must still be reported")
+	assert.Contains(t, err.Error(), "failed to close tmux session")
 }
