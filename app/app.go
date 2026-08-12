@@ -91,6 +91,11 @@ type home struct {
 	// It registers the new instance in the list after the instance has been started.
 	newInstanceFinalizer func()
 
+	// newInstance is the instance being named in stateNew. Held by pointer because
+	// l.items is in display order, so the instance just added is not the last one
+	// and cannot be recovered by index.
+	newInstance *session.Instance
+
 	// promptAfterName tracks if we should enter prompt mode after naming
 	promptAfterName bool
 
@@ -682,6 +687,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			m.state = stateDefault
 			m.promptAfterName = false
+			m.newInstance = nil
 			m.list.Kill()
 			return m, tea.Sequence(
 				tea.WindowSize(),
@@ -692,7 +698,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			)
 		}
 
-		instance := m.list.GetInstances()[m.list.NumInstances()-1]
+		instance := m.newInstance
+		if instance == nil {
+			m.state = stateDefault
+			m.menu.SetState(ui.StateDefault)
+			return m, m.handleError(fmt.Errorf("no session is being created"))
+		}
 		switch msg.Type {
 		// Start the instance (enable previews etc) and go back to the main menu state.
 		case tea.KeyEnter:
@@ -703,6 +714,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			// If promptAfterName, show prompt+branch overlay before starting
 			if m.promptAfterName {
 				m.promptAfterName = false
+				m.newInstance = nil
 				m.state = statePrompt
 				m.menu.SetState(ui.StatePrompt)
 				m.textInputOverlay = m.newPromptOverlay()
@@ -715,6 +727,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			instance.SetStatus(session.Loading)
 			m.newInstanceFinalizer()
 			m.promptAfterName = false
+			m.newInstance = nil
 			m.state = stateDefault
 			m.menu.SetState(ui.StateDefault)
 
@@ -749,6 +762,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(err)
 			}
 		case tea.KeyEsc:
+			m.newInstance = nil
 			m.list.Kill()
 			m.state = stateDefault
 			m.instanceChanged()
@@ -1472,7 +1486,8 @@ func (m *home) handleWorkspacePickerState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		instance.SubDir = target.SubDir
 
 		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+		m.newInstance = instance
+		m.list.SelectInstance(instance)
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
 
@@ -1570,7 +1585,8 @@ func (m *home) createInPlaceInstance(target session.SessionTarget) tea.Cmd {
 	}
 
 	m.newInstanceFinalizer = m.list.AddInstance(instance)
-	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+	m.newInstance = instance
+	m.list.SelectInstance(instance)
 	m.state = stateNew
 	m.menu.SetState(ui.StateNewInstance)
 	return nil

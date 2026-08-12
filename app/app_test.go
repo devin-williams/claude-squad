@@ -811,3 +811,57 @@ func TestCycleWorkspaceWithNoSessionsIsNoOp(t *testing.T) {
 	assert.Equal(t, "", h.list.GetViewFilter())
 	assert.Equal(t, "", h.workspaceID)
 }
+
+// TestStateNew_TitleGoesToTheNewInstance pins the creation flow against list
+// ordering. l.items is kept in display order (grouped by workspace), so the
+// instance just added is not the last one whenever an earlier workspace group
+// exists — recovering it by index renames a different, already-started session
+// and every keystroke is rejected.
+func TestStateNew_TitleGoesToTheNewInstance(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+
+	h := newWorkspacePickerTestHome(t)
+
+	existing := map[string]*session.Instance{}
+	for _, ws := range []string{"ws-a", "ws-b"} {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "existing-" + ws, Path: ".", Program: "echo",
+		})
+		require.NoError(t, err)
+		inst.WorkspaceID = ws
+		h.list.AddInstance(inst)
+		existing[ws] = inst
+	}
+
+	// Create into ws-a, the *first* group, so the new instance sorts ahead of
+	// the ws-b session and is no longer last in l.items.
+	h.state = stateSelectWorkspace
+	h.launchDir = tmpDir
+	h.workspaceID = "ws-a"
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: tmpDir, Path: tmpDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	model, _ := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+	h, ok := model.(*home)
+	require.True(t, ok)
+	require.Equal(t, stateNew, h.state)
+
+	created := h.newInstance
+	require.NotNil(t, created, "the instance being named must be reachable by pointer")
+	all := h.list.GetInstances()
+	require.NotSame(t, created, all[len(all)-1],
+		"precondition: the new instance must not be last, or this test proves nothing")
+
+	for _, r := range "wip" {
+		h.pressKey(r)
+	}
+
+	assert.Equal(t, "wip", created.Title, "typed title must land on the new instance")
+	assert.Equal(t, "existing-ws-b", existing["ws-b"].Title, "must not rename another session")
+	assert.Same(t, created, h.list.GetSelectedInstance(),
+		"the new instance must be selected — esc/ctrl+c kill the selection")
+}
