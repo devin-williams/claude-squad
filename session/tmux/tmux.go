@@ -178,26 +178,21 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 // CheckAndHandleTrustPrompt checks the pane content once for a trust prompt and dismisses it if found.
 // Returns true if the prompt was found and handled.
 func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
+	h := harnessFor(t.program)
+	if h == nil {
+		return false
+	}
+
 	content, err := t.CapturePaneContent()
 	if err != nil {
 		return false
 	}
 
-	if strings.HasSuffix(t.program, ProgramClaude) {
-		if strings.Contains(content, "Do you trust the files in this folder?") ||
-			strings.Contains(content, "new MCP server") {
-			if err := t.TapEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust/MCP screen: %v", err)
-			}
-			return true
+	if containsAny(content, h.trustPrompts) {
+		if err := h.dismissTrust(t); err != nil {
+			log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
 		}
-	} else {
-		if strings.Contains(content, "Open documentation url for more info") {
-			if err := t.TapDAndEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
-			}
-			return true
-		}
+		return true
 	}
 	return false
 }
@@ -273,13 +268,10 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 		return false, false
 	}
 
-	// Only set hasPrompt for claude and aider. Use these strings to check for a prompt.
-	if t.program == ProgramClaude {
-		hasPrompt = strings.Contains(content, "No, and tell Claude what to do differently")
-	} else if strings.HasPrefix(t.program, ProgramAider) {
-		hasPrompt = strings.Contains(content, "(Y)es/(N)o/(D)on't ask again")
-	} else if strings.HasPrefix(t.program, ProgramGemini) {
-		hasPrompt = strings.Contains(content, "Yes, allow once")
+	// Only set hasPrompt for known agent CLIs. Use their registered confirm
+	// prompt strings to check for a prompt.
+	if h := harnessFor(t.program); h != nil {
+		hasPrompt = containsAny(content, h.confirmPrompts)
 	}
 
 	if !bytes.Equal(t.monitor.hash(content), t.monitor.prevOutputHash) {
