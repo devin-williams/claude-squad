@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 )
 
@@ -139,6 +140,80 @@ func TestRender_InPlaceInstanceShowsHomeShortenedPath(t *testing.T) {
 	require.Contains(t, rendered, inPlaceIcon)
 	require.Contains(t, rendered, "~/dotfiles")
 	require.NotContains(t, rendered, branchIcon)
+}
+
+// widthOfEveryLine returns the lipgloss display width of every line in s.
+func widthOfEveryLine(s string) []int {
+	lines := strings.Split(s, "\n")
+	widths := make([]int, len(lines))
+	for i, line := range lines {
+		widths[i] = lipgloss.Width(line)
+	}
+	return widths
+}
+
+func newSingleInstanceList(t *testing.T, program string) *List {
+	t.Helper()
+	s := spinner.New()
+	l := NewList(&s, false)
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title:   "sess",
+		Path:    ".",
+		Program: program,
+	})
+	require.NoError(t, err)
+	inst.Branch = "feature/some-branch"
+	l.AddInstance(inst)
+	return l
+}
+
+// TestRender_BadgeDoesNotWidenRow verifies the harness badge is subtracted
+// from the row's available width rather than appended on top of it — every
+// rendered line must be exactly as wide with a badge as without one.
+func TestRender_BadgeDoesNotWidenRow(t *testing.T) {
+	withBadge := newSingleInstanceList(t, "claude")
+	withBadge.SetSize(80, 20)
+
+	withoutBadge := newSingleInstanceList(t, "")
+	withoutBadge.SetSize(80, 20)
+
+	require.Equal(t, widthOfEveryLine(withoutBadge.String()), widthOfEveryLine(withBadge.String()))
+}
+
+// TestRender_BadgeDoesNotWidenRow_CJKBranch is the same assertion with a
+// 2-cell-per-rune branch name, to catch a len() vs runewidth.StringWidth
+// slip in the badge-width accounting.
+func TestRender_BadgeDoesNotWidenRow_CJKBranch(t *testing.T) {
+	withBadge := newSingleInstanceList(t, "claude")
+	withBadge.items[0].Branch = "功能/新分支名称测试"
+	withBadge.SetSize(80, 20)
+
+	withoutBadge := newSingleInstanceList(t, "")
+	withoutBadge.items[0].Branch = "功能/新分支名称测试"
+	withoutBadge.SetSize(80, 20)
+
+	require.Equal(t, widthOfEveryLine(withoutBadge.String()), widthOfEveryLine(withBadge.String()))
+}
+
+// TestRender_NarrowWidthDropsBadgeNotBranch verifies that at a width too
+// narrow to fit both, the badge is sacrificed and the branch — the row's
+// identity — survives.
+func TestRender_NarrowWidthDropsBadgeNotBranch(t *testing.T) {
+	l := newSingleInstanceList(t, "claude")
+	l.SetSize(24, 20)
+
+	rendered := l.String()
+	require.NotContains(t, rendered, "claude", "badge must be dropped at narrow widths")
+	require.Contains(t, rendered, branchIcon, "branch must survive even when the badge is dropped")
+
+	// Only the instance's own branch line is in scope here — a pre-existing
+	// header/group-row overflow at very narrow widths is unrelated to the
+	// badge and not this test's concern.
+	for _, line := range strings.Split(rendered, "\n") {
+		if strings.Contains(line, branchIcon) {
+			require.LessOrEqual(t, lipgloss.Width(line), 24, "the branch line may not overflow the configured width")
+		}
+	}
 }
 
 func TestWorkspaceIDs(t *testing.T) {

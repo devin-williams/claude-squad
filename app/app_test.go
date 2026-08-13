@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/config"
+	"claude-squad/harness"
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/ui"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -17,6 +19,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// writeFakeExecutable creates an executable file named name inside dir so
+// exec.LookPath finds it when PATH is pointed at dir.
+func writeFakeExecutable(t *testing.T, dir, name string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if runtime.GOOS == "windows" {
+		path += ".exe"
+	}
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0755))
+}
 
 // TestMain runs before all tests to set up the test environment
 func TestMain(m *testing.M) {
@@ -541,6 +554,10 @@ func TestWorkspacePicker_EscReturnsToDefault(t *testing.T) {
 func TestWorkspacePicker_EnterOnNonGitCreatesInPlace(t *testing.T) {
 	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	// Empty PATH leaves one harness option, so the harness step is skipped and
+	// this stays a test of the workspace picker. Inheriting the real PATH would
+	// make the assertions depend on which agent CLIs the machine has installed.
+	t.Setenv("PATH", t.TempDir())
 	tmpDir := t.TempDir()
 
 	h := newWorkspacePickerTestHome(t)
@@ -574,6 +591,7 @@ func TestWorkspacePicker_EnterOnNonGitCreatesInPlace(t *testing.T) {
 func TestWorkspacePicker_EnterOnNonGitTwiceRefusesSecond(t *testing.T) {
 	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
 	tmpDir := t.TempDir()
 
 	h := newWorkspacePickerTestHome(t)
@@ -822,6 +840,13 @@ func TestStateNew_TitleGoesToTheNewInstance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
+	// A second harness on PATH guarantees the harness picker actually opens
+	// (rather than being skipped for a single option), so this test also
+	// exercises the harness step's own pointer-based instance handoff.
+	pathDir := t.TempDir()
+	writeFakeExecutable(t, pathDir, "cursor-agent")
+	t.Setenv("PATH", pathDir)
+
 	h := newWorkspacePickerTestHome(t)
 
 	existing := map[string]*session.Instance{}
@@ -848,6 +873,11 @@ func TestStateNew_TitleGoesToTheNewInstance(t *testing.T) {
 	model, _ := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
 	h, ok := model.(*home)
 	require.True(t, ok)
+	require.Equal(t, stateSelectHarness, h.state, "a second harness on PATH must open the picker rather than skip it")
+
+	model, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+	h, ok = model.(*home)
+	require.True(t, ok)
 	require.Equal(t, stateNew, h.state)
 
 	created := h.newInstance
@@ -864,4 +894,168 @@ func TestStateNew_TitleGoesToTheNewInstance(t *testing.T) {
 	assert.Equal(t, "existing-ws-b", existing["ws-b"].Title, "must not rename another session")
 	assert.Same(t, created, h.list.GetSelectedInstance(),
 		"the new instance must be selected — esc/ctrl+c kill the selection")
+}
+
+// TestHarnessPicker_JKMoveCursorNotList verifies that j/k while the harness
+// picker is open move the picker's own cursor and never reach the session
+// list underneath — the bug this guards against is handleMenuHighlighting
+// re-sending an unconsumed j/k so it also moves list selection.
+func TestHarnessPicker_JKMoveCursorNotList(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	h := newWorkspacePickerTestHome(t)
+	for _, title := range []string{"one", "two"} {
+		inst, err := session.NewInstance(session.InstanceOptions{Title: title, Path: ".", Program: "echo"})
+		require.NoError(t, err)
+		h.list.AddInstance(inst)
+	}
+	h.list.SetSelectedInstance(0)
+	selectedBefore := h.list.GetSelectedInstance()
+
+	h.state = stateSelectHarness
+	h.harnessPickerOverlay = overlay.NewHarnessPickerOverlay([]harness.Option{
+		{Label: "claude", Program: "claude"},
+		{Label: "cursor-agent", Program: "cursor-agent"},
+		{Label: "aider", Program: "aider"},
+	})
+
+	h.pressKey('j')
+	h.pressKey('j')
+
+	sel, ok := h.harnessPickerOverlay.Selected()
+	require.True(t, ok)
+	assert.Equal(t, "aider", sel.Program, "two j presses should move the picker cursor to the third row")
+	assert.Same(t, selectedBefore, h.list.GetSelectedInstance(), "the underlying session list must not move")
+}
+
+// TestHarnessPicker_EscCreatesNothing verifies Esc on the harness picker
+// leaves the previously selected session untouched — the picker step runs
+// before any instance is created, so there is nothing for it to kill.
+func TestHarnessPicker_EscCreatesNothing(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	h := newWorkspacePickerTestHome(t)
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "seed", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	h.list.AddInstance(inst)
+	h.list.SetSelectedInstance(0)
+
+	target, err := session.ResolveSessionTarget(t.TempDir(), t.TempDir())
+	require.NoError(t, err)
+	h.pendingSession = &pendingSession{target: target}
+	h.promptAfterName = true
+	h.state = stateSelectHarness
+	h.harnessPickerOverlay = overlay.NewHarnessPickerOverlay([]harness.Option{
+		{Label: "claude", Program: "claude"},
+		{Label: "cursor-agent", Program: "cursor-agent"},
+	})
+
+	model, _ := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+	h, ok := model.(*home)
+	require.True(t, ok)
+
+	assert.Equal(t, stateDefault, h.state)
+	assert.Nil(t, h.harnessPickerOverlay)
+	assert.Nil(t, h.pendingSession)
+	assert.False(t, h.promptAfterName)
+	require.Equal(t, 1, h.list.NumInstances())
+	assert.Same(t, inst, h.list.GetInstances()[0], "the seeded session must survive untouched")
+}
+
+// TestHarnessSkippedWhenSingleOption verifies that with no workspace profiles
+// and nothing extra on PATH, the only available harness is the config
+// default — so the picker step is skipped and Enter on the workspace picker
+// lands straight in stateNew.
+func TestHarnessSkippedWhenSingleOption(t *testing.T) {
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir()) // empty — nothing else resolvable
+	tmpDir := t.TempDir()
+
+	h := newWorkspacePickerTestHome(t)
+	h.appConfig = config.DefaultConfig()
+	h.program = h.appConfig.DefaultProgram
+	h.state = stateSelectWorkspace
+	h.launchDir = tmpDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: tmpDir, Path: tmpDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	model, _ := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+	h, ok := model.(*home)
+	require.True(t, ok)
+
+	require.Equal(t, stateNew, h.state, "a single harness option must skip the picker")
+	require.NotNil(t, h.newInstance)
+	assert.Equal(t, h.appConfig.DefaultProgram, h.newInstance.Program)
+}
+
+// TestHomeDirConfirm_ReachesHarnessPicker pins the confirmation path. The
+// confirm handler used to reset state unconditionally after invoking OnConfirm,
+// which silently undid the state that callback had just set: pressing y on the
+// $HOME warning left stateDefault with a dangling pendingSession, so the picker
+// never rendered and no session was created. It looked like y did nothing.
+func TestHomeDirConfirm_ReachesHarnessPicker(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", homeDir)
+
+	pathDir := t.TempDir()
+	writeFakeExecutable(t, pathDir, "cursor-agent")
+	t.Setenv("PATH", pathDir)
+
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.launchDir = homeDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: homeDir, Path: homeDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	model, _ := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+	h, ok := model.(*home)
+	require.True(t, ok)
+	require.Equal(t, stateConfirm, h.state, "selecting $HOME must warn first")
+
+	h.keySent = true
+	model, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	h, ok = model.(*home)
+	require.True(t, ok)
+
+	assert.Equal(t, stateSelectHarness, h.state, "confirming must advance to the harness picker")
+	assert.NotNil(t, h.harnessPickerOverlay, "the picker must exist so View cannot deref nil")
+	assert.NotNil(t, h.pendingSession)
+	assert.Nil(t, h.confirmationOverlay)
+	assert.Equal(t, 0, h.list.NumInstances(), "no session until a harness is chosen")
+}
+
+// Cancelling the $HOME warning must return to the workspace picker, which the
+// same unconditional reset was overwriting with stateDefault.
+func TestHomeDirConfirm_CancelReturnsToWorkspacePicker(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", t.TempDir())
+
+	h := newWorkspacePickerTestHome(t)
+	h.state = stateSelectWorkspace
+	h.launchDir = homeDir
+	h.workspacePickerMode = workspacePickerCreate
+	h.workspacePickerOverlay = overlay.NewWorkspacePickerOverlay([]overlay.WorkspaceItem{
+		{Label: homeDir, Path: homeDir, Kind: overlay.KindNonGit},
+	}, nil)
+
+	model, _ := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+	h, _ = model.(*home)
+	require.Equal(t, stateConfirm, h.state)
+
+	h.keySent = true
+	model, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	h, _ = model.(*home)
+
+	assert.Equal(t, stateSelectWorkspace, h.state, "cancel must go back to the picker, not the list")
+	assert.Equal(t, 0, h.list.NumInstances())
 }

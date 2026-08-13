@@ -50,12 +50,12 @@ var harnesses = []*harness{
 	},
 }
 
-// harnessBasename normalizes a stored program string to the token that
+// HarnessName normalizes a stored program string to the token that
 // identifies its agent CLI: the first whitespace-separated field (dropping
 // any arguments), then the path basename (dropping any directory). Stored
 // program strings are frequently absolute paths and/or carry arguments, e.g.
 // "/Users/x/.local/bin/claude" or "aider --model gpt-4".
-func harnessBasename(program string) string {
+func HarnessName(program string) string {
 	fields := strings.Fields(program)
 	if len(fields) == 0 {
 		return ""
@@ -66,7 +66,7 @@ func harnessBasename(program string) string {
 // harnessFor returns the registry entry matching program, or nil if the
 // program is not a known agent CLI.
 func harnessFor(program string) *harness {
-	name := harnessBasename(program)
+	name := HarnessName(program)
 	for _, h := range harnesses {
 		if h.name == name {
 			return h
@@ -78,6 +78,15 @@ func harnessFor(program string) *harness {
 // KnownHarness reports whether program identifies a registered agent CLI.
 func KnownHarness(program string) bool {
 	return harnessFor(program) != nil
+}
+
+// KnownHarnessNames returns the registry's names in declaration order.
+func KnownHarnessNames() []string {
+	names := make([]string, len(harnesses))
+	for i, h := range harnesses {
+		names[i] = h.name
+	}
+	return names
 }
 
 func containsAny(content string, needles []string) bool {

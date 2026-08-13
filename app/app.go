@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/config"
+	"claude-squad/harness"
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
@@ -54,6 +55,8 @@ const (
 	stateConfirm
 	// stateSelectWorkspace is the state while the workspace picker overlay is open.
 	stateSelectWorkspace
+	// stateSelectHarness is the state while the harness picker overlay is open.
+	stateSelectHarness
 	// stateFocus is the state when keystrokes are forwarded to the selected session.
 	stateFocus
 )
@@ -123,6 +126,14 @@ type home struct {
 	// workspacePickerMode records what Enter does while stateSelectWorkspace is active.
 	workspacePickerMode workspacePickerMode
 
+	// confirmCmd carries a Cmd out of a confirmation callback, which cannot
+	// return one itself.
+	confirmCmd tea.Cmd
+
+	// pendingSession holds the target of a session being created while the
+	// harness picker is open, between the workspace step and the harness step.
+	pendingSession *pendingSession
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -143,6 +154,8 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 	// workspacePickerOverlay handles the type-to-filter workspace/path picker
 	workspacePickerOverlay *overlay.WorkspacePickerOverlay
+	// harnessPickerOverlay handles the post-workspace agent-CLI picker
+	harnessPickerOverlay *overlay.HarnessPickerOverlay
 
 	metadataTick uint64
 
@@ -176,22 +189,11 @@ func (m *home) sessionPath() string {
 	return "."
 }
 
-// resolveWorkspaceProgram returns the program command and profile name a new
-// session in the active workspace should use. If the active workspace defines
-// any profiles, the first one is treated as the workspace default; otherwise
-// the caller's launch-time program (m.program) is used and the profile name
-// is empty.
-func (m *home) resolveWorkspaceProgram() (program, profileName string) {
-	program = m.program
-	if m.workspaceID == "" {
-		return
-	}
-	reg := config.LoadWorkspaceRegistry()
-	ws := reg.Get(m.workspaceID)
-	if ws == nil || len(ws.Profiles) == 0 {
-		return
-	}
-	return ws.Profiles[0].Program, ws.Profiles[0].Name
+// pendingSession is a session target waiting on the harness picker, between
+// the workspace step and instance creation.
+type pendingSession struct {
+	target  session.SessionTarget
+	inPlace bool
 }
 
 // applyWorkspaceFocus sets the active workspace — where new sessions land. It
@@ -321,6 +323,7 @@ func (m *home) openWorkspacePicker(mode workspacePickerMode) tea.Cmd {
 func newHome(ctx context.Context, program string, autoYes bool, workspaceID string, launchDir string) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
+	harness.SetBadgeOverrides(appConfig.HarnessBadges)
 
 	// Load application state
 	appState := config.LoadState()
@@ -402,6 +405,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	}
 	if m.workspacePickerOverlay != nil {
 		m.workspacePickerOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
+	}
+	if m.harnessPickerOverlay != nil {
+		m.harnessPickerOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
 	}
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
@@ -627,7 +633,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateSelectWorkspace {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateSelectWorkspace || m.state == stateSelectHarness {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -794,15 +800,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			if m.textInputOverlay.IsSubmitted() {
 				prompt := m.textInputOverlay.GetValue()
 				selectedBranch := m.textInputOverlay.GetSelectedBranch()
-				selectedProgram := m.textInputOverlay.GetSelectedProgram()
 
 				if !selected.Started() {
 					// Shift+N flow: instance not started yet — set branch, start, then send prompt
 					if selectedBranch != "" {
 						selected.SetSelectedBranch(selectedBranch)
-					}
-					if selectedProgram != "" {
-						selected.Program = selectedProgram
 					}
 					selected.Prompt = prompt
 
@@ -855,15 +857,24 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	} else if m.state == stateSelectWorkspace {
 		return m.handleWorkspacePickerState(msg)
+	} else if m.state == stateSelectHarness {
+		return m.handleHarnessPickerState(msg)
 	}
 
 	// Handle confirmation state
 	if m.state == stateConfirm {
 		shouldClose := m.confirmationOverlay.HandleKeyPress(msg)
 		if shouldClose {
-			m.state = stateDefault
 			m.confirmationOverlay = nil
-			return m, nil
+			// A callback may have moved us on (the harness picker, the name
+			// prompt, back to the workspace picker). Only fall back to the list
+			// when it left us sitting in stateConfirm, or that move is undone.
+			if m.state == stateConfirm {
+				m.state = stateDefault
+			}
+			cmd := m.confirmCmd
+			m.confirmCmd = nil
+			return m, tea.Batch(tea.WindowSize(), cmd)
 		}
 		return m, nil
 	}
@@ -1434,7 +1445,7 @@ func (m *home) showInfo(text string) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "")
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.
@@ -1497,29 +1508,37 @@ func (m *home) handleWorkspacePickerState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return nil
 		}
 
-		program, profileName := m.resolveWorkspaceProgram()
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        target.Dir,
-			Program:     program,
-			WorkspaceID: m.workspaceID,
-			ProfileName: profileName,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-		instance.SubDir = target.SubDir
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.newInstance = instance
-		m.list.SelectInstance(instance)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-
-		return m, fetchCmd
+		return m.beginHarnessSelection(target, false, fetchCmd)
 	}
 
 	m.workspacePickerOverlay.HandleKeyPress(msg)
+	return m, nil
+}
+
+// handleHarnessPickerState handles key events while stateSelectHarness is
+// active. Esc/ctrl+c deliberately do not call m.list.Kill(): nothing has been
+// added to the list yet at this step, so Kill would destroy the previously
+// selected session instead.
+func (m *home) handleHarnessPickerState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.harnessPickerOverlay = nil
+		m.pendingSession = nil
+		m.promptAfterName = false
+		m.state = stateDefault
+		return m, tea.WindowSize()
+	}
+
+	if msg.Type == tea.KeyEnter {
+		opt, ok := m.harnessPickerOverlay.Selected()
+		if !ok {
+			return m, nil
+		}
+		m.harnessPickerOverlay = nil
+		return m.createPendingInstance(opt)
+	}
+
+	m.harnessPickerOverlay.HandleKeyPress(msg)
 	return m, nil
 }
 
@@ -1536,7 +1555,7 @@ func (m *home) enterInPlaceTarget(target session.SessionTarget) (tea.Model, tea.
 		m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
 		m.confirmationOverlay.SetWidth(50)
 		m.confirmationOverlay.OnConfirm = func() {
-			_ = m.createInPlaceInstance(target)
+			_, m.confirmCmd = m.createInPlaceInstance(target)
 		}
 		m.confirmationOverlay.OnCancel = func() {
 			m.state = stateSelectWorkspace
@@ -1545,7 +1564,7 @@ func (m *home) enterInPlaceTarget(target session.SessionTarget) (tea.Model, tea.
 		return m, nil
 	}
 
-	return m, m.createInPlaceInstance(target)
+	return m.createInPlaceInstance(target)
 }
 
 // findInPlaceInstance returns the existing in-place instance rooted at dir, if
@@ -1576,16 +1595,16 @@ func isHomeDir(dir string) bool {
 // createInPlaceInstance registers target.Dir as a non-git workspace and
 // creates an in-place session in it, mirroring the worktree creation path in
 // handleWorkspacePickerState minus the branch prefetch (there are no branches).
-func (m *home) createInPlaceInstance(target session.SessionTarget) tea.Cmd {
+func (m *home) createInPlaceInstance(target session.SessionTarget) (tea.Model, tea.Cmd) {
 	reg := config.LoadWorkspaceRegistry()
 	ws, err := reg.EnsureWorkspace(target.Dir, "")
 	if err != nil {
-		return m.handleError(err)
+		return m, m.handleError(err)
 	}
 	if !ws.NonGit {
 		ws.NonGit = true
 		if err := reg.Upsert(*ws); err != nil {
-			return m.handleError(err)
+			return m, m.handleError(err)
 		}
 	}
 	m.applyWorkspaceFocus(ws.ID)
@@ -1593,28 +1612,75 @@ func (m *home) createInPlaceInstance(target session.SessionTarget) tea.Cmd {
 
 	if m.workspacePickerMode == workspacePickerSwitch {
 		m.state = stateDefault
-		return tea.WindowSize()
+		return m, tea.WindowSize()
 	}
 
-	program, profileName := m.resolveWorkspaceProgram()
+	return m.beginHarnessSelection(target, true)
+}
+
+// createPendingInstance builds the instance recorded by beginHarnessSelection
+// using the chosen harness option, then finalizes it into the list exactly as
+// the two creation sites used to do inline.
+func (m *home) createPendingInstance(opt harness.Option) (tea.Model, tea.Cmd) {
+	p := m.pendingSession
+	if p == nil {
+		return m, m.abandonPendingSession(fmt.Errorf("no session is pending harness selection"))
+	}
+	m.pendingSession = nil
+
 	instance, err := session.NewInstance(session.InstanceOptions{
 		Title:       "",
-		Path:        target.Dir,
-		Program:     program,
+		Path:        p.target.Dir,
+		Program:     opt.Program,
 		WorkspaceID: m.workspaceID,
-		ProfileName: profileName,
-		InPlace:     true,
+		ProfileName: opt.ProfileName,
+		InPlace:     p.inPlace,
 	})
 	if err != nil {
-		return m.handleError(err)
+		return m, m.abandonPendingSession(err)
 	}
+	instance.SubDir = p.target.SubDir
 
 	m.newInstanceFinalizer = m.list.AddInstance(instance)
 	m.newInstance = instance
 	m.list.SelectInstance(instance)
 	m.state = stateNew
 	m.menu.SetState(ui.StateNewInstance)
-	return nil
+	return m, nil
+}
+
+// abandonPendingSession reports err and returns to the list. Without the state
+// reset, a failure during harness selection leaves stateSelectHarness set with
+// no overlay, and View dereferences the nil on the next frame.
+func (m *home) abandonPendingSession(err error) tea.Cmd {
+	m.pendingSession = nil
+	m.harnessPickerOverlay = nil
+	m.promptAfterName = false
+	m.state = stateDefault
+	m.menu.SetState(ui.StateDefault)
+	return m.handleError(err)
+}
+
+// beginHarnessSelection records target as the pending session and either
+// skips straight to instance creation (a single available harness option) or
+// opens the harness picker overlay. extraCmds are batched into the returned
+// Cmd regardless of which path is taken — e.g. the git branch prefetch that
+// should warm while the picker is up, independent of the harness choice.
+func (m *home) beginHarnessSelection(target session.SessionTarget, inPlace bool, extraCmds ...tea.Cmd) (tea.Model, tea.Cmd) {
+	m.pendingSession = &pendingSession{target: target, inPlace: inPlace}
+
+	reg := config.LoadWorkspaceRegistry()
+	ws := reg.Get(m.workspaceID)
+	opts := harness.Options(ws, m.appConfig, m.program)
+
+	if len(opts) == 1 {
+		model, cmd := m.createPendingInstance(opts[0])
+		return model, tea.Batch(append(extraCmds, cmd)...)
+	}
+
+	m.harnessPickerOverlay = overlay.NewHarnessPickerOverlay(opts)
+	m.state = stateSelectHarness
+	return m, tea.Batch(append(extraCmds, tea.WindowSize())...)
 }
 
 // confirmAction shows a confirmation modal and stores the action to execute on confirm
@@ -1674,6 +1740,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("workspace picker overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.workspacePickerOverlay.Render(), mainView, true, true)
+	} else if m.state == stateSelectHarness {
+		if m.harnessPickerOverlay == nil {
+			log.ErrorLog.Printf("harness picker overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.harnessPickerOverlay.Render(), mainView, true, true)
 	} else if m.state == stateHelp {
 		if m.textOverlay == nil {
 			log.ErrorLog.Printf("text overlay is nil")

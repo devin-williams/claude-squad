@@ -61,6 +61,10 @@ type Config struct {
 	Discovery DiscoveryConfig `json:"discovery"`
 	// NewSessionBase configures where a new session's branch starts from.
 	NewSessionBase NewSessionBaseConfig `json:"new_session_base"`
+	// HarnessBadges overrides the list-row/picker badge glyph per harness name
+	// (e.g. "claude", "cursor-agent"). Unset or missing keys fall back to the
+	// harness package's built-in defaults — see harness.Badge.
+	HarnessBadges map[string]string `json:"harness_badges,omitempty"`
 }
 
 // NewSessionBaseConfig controls the base commit a brand-new session's branch

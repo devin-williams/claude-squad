@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	"claude-squad/config"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -33,17 +32,16 @@ var (
 
 // TextInputOverlay represents a text input overlay with state management.
 type TextInputOverlay struct {
-	textarea      textarea.Model
-	Title         string
-	FocusIndex    int // index into focusable stops
-	Submitted     bool
-	Canceled      bool
-	OnSubmit      func()
-	width         int
-	height        int
-	profilePicker *ProfilePicker
-	branchPicker  *BranchPicker
-	numStops      int // total number of focus stops
+	textarea     textarea.Model
+	Title        string
+	FocusIndex   int // index into focusable stops
+	Submitted    bool
+	Canceled     bool
+	OnSubmit     func()
+	width        int
+	height       int
+	branchPicker *BranchPicker
+	numStops     int // total number of focus stops
 }
 
 // NewTextInputOverlay creates a new text input overlay with the given title and initial value.
@@ -58,26 +56,15 @@ func NewTextInputOverlay(title string, initialValue string) *TextInputOverlay {
 
 // NewTextInputOverlayWithBranchPicker creates a text input overlay that includes an
 // empty branch picker. Results are populated asynchronously via SetBranchResults.
-func NewTextInputOverlayWithBranchPicker(title string, initialValue string, profiles []config.Profile) *TextInputOverlay {
+func NewTextInputOverlayWithBranchPicker(title string, initialValue string) *TextInputOverlay {
 	ti := newTextarea(initialValue)
 	bp := NewBranchPicker()
 
-	var pp *ProfilePicker
-	if len(profiles) > 0 {
-		pp = NewProfilePicker(profiles)
-	}
-
-	numStops := 3 // textarea + branch picker + enter button
-	if pp != nil && pp.HasMultiple() {
-		numStops = 4 // profile picker + textarea + branch picker + enter button
-	}
-
 	overlay := &TextInputOverlay{
-		textarea:      ti,
-		Title:         title,
-		profilePicker: pp,
-		branchPicker:  bp,
-		numStops:      numStops,
+		textarea:     ti,
+		Title:        title,
+		branchPicker: bp,
+		numStops:     3, // textarea + branch picker + enter button
 	}
 	overlay.updateFocusState()
 	return overlay
@@ -102,9 +89,6 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	if t.branchPicker != nil {
 		t.branchPicker.SetWidth(width - 6)
 	}
-	if t.profilePicker != nil {
-		t.profilePicker.SetWidth(width - 6)
-	}
 }
 
 // Init initializes the text input overlay model
@@ -117,16 +101,8 @@ func (t *TextInputOverlay) View() string {
 	return t.Render()
 }
 
-// isProfilePicker returns true if the current focus is on the profile picker.
-func (t *TextInputOverlay) isProfilePicker() bool {
-	return t.profilePicker != nil && t.profilePicker.HasMultiple() && t.FocusIndex == 0
-}
-
 // isTextarea returns true if the current focus is on the textarea.
 func (t *TextInputOverlay) isTextarea() bool {
-	if t.profilePicker != nil && t.profilePicker.HasMultiple() {
-		return t.FocusIndex == 1
-	}
 	return t.FocusIndex == 0
 }
 
@@ -140,9 +116,6 @@ func (t *TextInputOverlay) isBranchPicker() bool {
 	if t.branchPicker == nil {
 		return false
 	}
-	if t.profilePicker != nil && t.profilePicker.HasMultiple() {
-		return t.FocusIndex == 2
-	}
 	return t.FocusIndex == 1
 }
 
@@ -152,7 +125,7 @@ func (t *TextInputOverlay) setFocusIndex(i int) {
 	t.updateFocusState()
 }
 
-// updateFocusState syncs the textarea/branchPicker/profilePicker focus/blur state.
+// updateFocusState syncs the textarea/branchPicker focus/blur state.
 func (t *TextInputOverlay) updateFocusState() {
 	if t.isTextarea() {
 		t.textarea.Focus()
@@ -164,13 +137,6 @@ func (t *TextInputOverlay) updateFocusState() {
 			t.branchPicker.Focus()
 		} else {
 			t.branchPicker.Blur()
-		}
-	}
-	if t.profilePicker != nil {
-		if t.isProfilePicker() {
-			t.profilePicker.Focus()
-		} else {
-			t.profilePicker.Blur()
 		}
 	}
 }
@@ -201,11 +167,6 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			t.setFocusIndex(t.numStops - 1)
 			return false, false
 		}
-		if t.isProfilePicker() {
-			// Enter on profile picker = advance to textarea
-			t.setFocusIndex(t.FocusIndex + 1)
-			return false, false
-		}
 		// Send enter to textarea
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
@@ -214,12 +175,6 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 	default:
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
-			return false, false
-		}
-		if t.isProfilePicker() {
-			if msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight {
-				t.profilePicker.HandleKeyPress(msg)
-			}
 			return false, false
 		}
 		if t.isBranchPicker() {
@@ -242,15 +197,6 @@ func (t *TextInputOverlay) GetSelectedBranch() string {
 		return ""
 	}
 	return t.branchPicker.GetSelectedBranch()
-}
-
-// GetSelectedProgram returns the program string from the selected profile.
-// Returns empty string if no profile picker is present.
-func (t *TextInputOverlay) GetSelectedProgram() string {
-	if t.profilePicker == nil {
-		return ""
-	}
-	return t.profilePicker.GetSelectedProfile().Program
 }
 
 // BranchFilterVersion returns the current filter version from the branch picker.
@@ -310,12 +256,6 @@ func (t *TextInputOverlay) Render() string {
 
 	// Build the view
 	var content string
-
-	// Render profile picker if present, above the prompt
-	if t.profilePicker != nil {
-		content += t.profilePicker.Render() + "\n\n"
-		content += divider + "\n\n"
-	}
 
 	content += tiTitleStyle.Render(t.Title) + "\n"
 	content += t.textarea.View() + "\n\n"

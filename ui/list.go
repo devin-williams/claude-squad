@@ -2,8 +2,10 @@ package ui
 
 import (
 	"claude-squad/config"
+	"claude-squad/harness"
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/tmux"
 	"errors"
 	"fmt"
 	"sort"
@@ -344,6 +346,25 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	// Use fixed width for diff stats to avoid layout issues
 	remainingWidth -= diffWidth
 
+	badge, badgeWidth := "", 0
+	if name := tmux.HarnessName(i.Program); name != "" {
+		plain := "  " + harness.Badge(name) + " " + name + " "
+		// Measured, never hardcoded: the badge glyph (e.g. ◆ U+25C6) is
+		// East-Asian Ambiguous width, so runewidth may report 1 or 2 cells
+		// for it depending on terminal — a hardcoded width silently overflows.
+		badgeWidth = runewidth.StringWidth(plain)
+		if badgeWidth > 0 && remainingWidth-badgeWidth >= 4 {
+			remainingWidth -= badgeWidth
+			dot := lipgloss.NewStyle().Foreground(harness.DotColor(name)).Background(descS.GetBackground()).Render(harness.Badge(name))
+			label := lipgloss.NewStyle().Background(descS.GetBackground()).Foreground(descS.GetForeground()).Render(name)
+			badge = "  " + dot + " " + label + " "
+		} else {
+			// The badge is the first thing sacrificed at narrow widths — the
+			// branch is the row's identity and must not be dropped for it.
+			badgeWidth = 0
+		}
+	}
+
 	if i.Started() && hasMultipleRepos {
 		repoName, err := i.RepoName()
 		if err != nil {
@@ -372,7 +393,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		spaces = strings.Repeat(" ", remainingWidth)
 	}
 
-	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), icon, branch, spaces, diff)
+	branchLine := fmt.Sprintf("%s %s-%s%s%s%s", strings.Repeat(" ", len(prefix)), icon, branch, spaces, badge, diff)
 
 	// join title and subtitle
 	text := lipgloss.JoinVertical(
