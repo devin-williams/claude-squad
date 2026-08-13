@@ -39,6 +39,15 @@ var harnesses = []*harness{
 		trustPrompts:   []string{"Open documentation url for more info"},
 		dismissTrust:   (*TmuxSession).TapDAndEnter,
 	},
+	{
+		// Strings transcribed from a live cursor-agent pane, not from its docs.
+		// Only non-allowlisted shell commands prompt; file edits apply without
+		// asking, so there is no edit-approval string to match.
+		name:           ProgramCursor,
+		confirmPrompts: []string{"Run this command?", "Waiting for approval"},
+		trustPrompts:   []string{"Workspace Trust Required", "Do you trust the contents of this directory?"},
+		dismissTrust:   (*TmuxSession).TapEnter,
+	},
 }
 
 // harnessBasename normalizes a stored program string to the token that

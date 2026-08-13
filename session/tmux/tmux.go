@@ -25,6 +25,10 @@ const ProgramClaude = "claude"
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
 
+// ProgramCursor is the Cursor CLI's binary name, which is not "cursor" —
+// /usr/local/bin/cursor is the GUI launcher.
+const ProgramCursor = "cursor-agent"
+
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
 	// Initialized by NewTmuxSession
