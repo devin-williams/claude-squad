@@ -399,15 +399,15 @@ func (t *TerminalPane) SendKeys(keys string) error {
 	return s.tmuxSession.SendKeys(keys)
 }
 
-// SendWheel forwards a mouse-wheel scroll to the current terminal session,
-// mirroring session.Instance.SendWheel: alt-screen apps scroll their own
-// transcript rather than the pane's scroll mode.
-func (t *TerminalPane) SendWheel(up bool) error {
-	button := 65
-	if up {
-		button = 64
+// ExitCopyMode releases the current terminal session's pane from copy-mode.
+func (t *TerminalPane) ExitCopyMode() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s, ok := t.sessions[t.currentTitle]
+	if !ok || s.tmuxSession == nil {
+		return nil
 	}
-	return t.SendKeys(fmt.Sprintf("\x1b[<%d;1;1M", button))
+	return s.tmuxSession.ExitCopyMode()
 }
 
 // Alive reports whether the current terminal session's tmux session exists.

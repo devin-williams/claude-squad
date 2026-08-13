@@ -505,17 +505,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// In focus mode, forward the wheel to the focus target (like when
-			// attached): alt-screen apps such as Claude Code scroll their own
-			// transcript — tmux keeps no scrollback for them. The preview
-			// mirrors the result.
-			if m.state == stateFocus && m.focusTarget != nil && m.focusTarget.Alive() {
-				if err := m.focusTarget.SendWheel(msg.Button == tea.MouseButtonWheelUp); err != nil {
-					return m, tea.Batch(m.exitFocusMode(), m.handleError(err))
-				}
-				return m, nil
-			}
-
+			// Focus mode scrolls the same snapshot as the default state. It used
+			// to forward the wheel to the session instead, which tmux converted
+			// into copy-mode on the pane and left focus mode unable to type.
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
 				m.tabbedWindow.ScrollUp()
@@ -1153,20 +1145,38 @@ func (m *home) enterFocusMode(selected *session.Instance) (tea.Model, tea.Cmd) {
 		if err := m.tabbedWindow.EnsureTerminalSession(selected); err != nil {
 			return m, m.handleError(err)
 		}
+		m.focusTarget = m.tabbedWindow.Terminal()
+	} else {
+		m.focusTarget = instanceFocusTarget{selected}
+	}
+
+	// Snap to the live view so keystrokes are visible.
+	m.snapFocusToLiveView(selected)
+
+	// A pane tmux left in copy-mode (a real mouse wheel does this whenever the
+	// program has not enabled mouse tracking) swallows every key as a copy-mode
+	// binding, so focus mode would look dead. Release it on the way in.
+	if err := m.focusTarget.ExitCopyMode(); err != nil {
+		log.ErrorLog.Printf("could not exit copy-mode: %v", err)
+	}
+
+	return m, m.instanceChanged()
+}
+
+// snapFocusToLiveView drops any scroll snapshot on the pane focus mode targets,
+// so what is on screen is the session's current output.
+func (m *home) snapFocusToLiveView(selected *session.Instance) {
+	if m.tabbedWindow.IsInTerminalTab() {
 		if m.tabbedWindow.IsTerminalInScrollMode() {
 			m.tabbedWindow.ResetTerminalToNormalMode()
 		}
-		m.focusTarget = m.tabbedWindow.Terminal()
-	} else {
-		// Snap the preview to the live view so keystrokes are visible.
-		if m.tabbedWindow.IsPreviewInScrollMode() {
-			if err := m.tabbedWindow.ResetPreviewToNormalMode(selected); err != nil {
-				log.ErrorLog.Print(err)
-			}
-		}
-		m.focusTarget = instanceFocusTarget{selected}
+		return
 	}
-	return m, m.instanceChanged()
+	if m.tabbedWindow.IsPreviewInScrollMode() {
+		if err := m.tabbedWindow.ResetPreviewToNormalMode(selected); err != nil {
+			log.ErrorLog.Print(err)
+		}
+	}
 }
 
 // exitFocusMode returns from focus mode to the default list navigation.
@@ -1194,15 +1204,24 @@ func (m *home) handleFocusState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.exitFocusMode()
 	}
 
-	// shift+up/down scroll like the wheel: forwarded to the session so Claude
-	// Code scrolls its own transcript (alt-screen apps have no tmux scrollback
-	// to snapshot).
+	// shift+up/down scroll the pane's own snapshot, exactly as they do outside
+	// focus mode. They must NOT be forwarded as a wheel event: tmux only passes
+	// a wheel through to a program that enabled mouse tracking, and these agents
+	// do not, so tmux keeps the event and drops the pane into copy-mode — where
+	// everything subsequently typed is eaten as a copy-mode binding.
 	if msg.String() == "shift+up" || msg.String() == "shift+down" {
-		if err := m.focusTarget.SendWheel(msg.String() == "shift+up"); err != nil {
-			return m, tea.Batch(m.exitFocusMode(), m.handleError(err))
+		if msg.String() == "shift+up" {
+			m.tabbedWindow.ScrollUp()
+		} else {
+			m.tabbedWindow.ScrollDown()
 		}
 		return m, m.instanceChanged()
 	}
+
+	// Any other key means the user is typing again, so leave the frozen
+	// snapshot behind — otherwise the pane keeps showing scrolled-back content
+	// while their keystrokes land invisibly at the live prompt.
+	m.snapFocusToLiveView(selected)
 
 	data := keyMsgToBytes(msg)
 	if len(data) == 0 {

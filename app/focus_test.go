@@ -94,13 +94,13 @@ func TestKeyMsgToBytes(t *testing.T) {
 	}
 }
 
-// fakeFocusTarget records SendKeys/SendWheel calls so tests can assert which
-// concrete target focus-mode routing actually reached.
+// fakeFocusTarget records the calls focus-mode routing makes, so tests can
+// assert which concrete target it actually reached.
 type fakeFocusTarget struct {
-	alive    bool
-	sentKeys []string
-	wheelUps []bool
-	sendErr  error
+	alive        bool
+	sentKeys     []string
+	copyModeExit int
+	sendErr      error
 }
 
 func (f *fakeFocusTarget) SendKeys(keys string) error {
@@ -108,9 +108,9 @@ func (f *fakeFocusTarget) SendKeys(keys string) error {
 	return f.sendErr
 }
 
-func (f *fakeFocusTarget) SendWheel(up bool) error {
-	f.wheelUps = append(f.wheelUps, up)
-	return f.sendErr
+func (f *fakeFocusTarget) ExitCopyMode() error {
+	f.copyModeExit++
+	return nil
 }
 
 func (f *fakeFocusTarget) Alive() bool { return f.alive }
@@ -284,19 +284,20 @@ func TestHandleFocusState_ExitKeysClearTarget(t *testing.T) {
 	})
 }
 
-// TestHandleFocusState_WheelForwardsOnTerminalTab verifies that, in focus
-// mode with the terminal tab active, a mouse wheel event is forwarded to the
-// session rather than driving the terminal pane's own scroll mode.
-func TestHandleFocusState_WheelForwardsOnTerminalTab(t *testing.T) {
+// TestHandleFocusState_WheelScrollsPaneNotSession pins the scroll fix. The
+// wheel must drive the pane's own snapshot scroll, NOT be forwarded to the
+// session: tmux only passes a wheel through to a program that enabled mouse
+// tracking, and these agents do not (verified: mouse_any_flag=0), so a
+// forwarded wheel is captured by tmux as copy-mode, after which focus mode
+// cannot type at all. An earlier version of this test asserted the forwarding
+// behaviour, i.e. it locked the bug in.
+func TestHandleFocusState_WheelScrollsPaneNotSession(t *testing.T) {
 	h := newFocusTestHome(t)
 	inst := newStartedInPlaceInstance(t, "wheel-target")
 	defer func() { _ = inst.Kill() }()
 	h.list.AddInstance(inst)
 	h.list.SetSelectedInstance(0)
-
-	h.tabbedWindow.Toggle() // Preview -> Diff
-	h.tabbedWindow.Toggle() // Diff -> Terminal
-	require.True(t, h.tabbedWindow.IsInTerminalTab())
+	h.instanceChanged() // prime the pane with the selected instance
 
 	h.state = stateFocus
 	fake := &fakeFocusTarget{alive: true}
@@ -305,7 +306,50 @@ func TestHandleFocusState_WheelForwardsOnTerminalTab(t *testing.T) {
 	mouseMsg := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp}
 	_, _ = h.Update(mouseMsg)
 
-	require.Len(t, fake.wheelUps, 1)
-	assert.True(t, fake.wheelUps[0])
-	assert.False(t, h.tabbedWindow.IsTerminalInScrollMode(), "wheel must not enter the pane's own scroll mode in focus mode")
+	assert.Empty(t, fake.sentKeys, "the wheel must never be written to the session")
+	assert.True(t, h.tabbedWindow.IsPreviewInScrollMode(), "the wheel must drive the pane's own scroll mode")
+}
+
+// TestHandleFocusState_ShiftArrowsScrollThenTypingSnapsBack is the keyboard
+// half of the same rule, plus the follow-on: typing must return to the live
+// view so keystrokes are not sent while scrolled-back output is on screen.
+func TestHandleFocusState_ShiftArrowsScrollThenTypingSnapsBack(t *testing.T) {
+	h := newFocusTestHome(t)
+	inst := newStartedInPlaceInstance(t, "shift-scroll-target")
+	defer func() { _ = inst.Kill() }()
+	h.list.AddInstance(inst)
+	h.list.SetSelectedInstance(0)
+	h.instanceChanged()
+
+	h.state = stateFocus
+	fake := &fakeFocusTarget{alive: true}
+	h.focusTarget = fake
+
+	_, _ = h.handleFocusState(tea.KeyMsg{Type: tea.KeyShiftUp})
+
+	assert.Empty(t, fake.sentKeys, "shift+up must not be forwarded as keys or as a wheel event")
+	assert.True(t, h.tabbedWindow.IsPreviewInScrollMode())
+	assert.Equal(t, stateFocus, h.state)
+
+	_, _ = h.handleFocusState(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	assert.False(t, h.tabbedWindow.IsPreviewInScrollMode(), "typing must snap back to the live view")
+	require.Len(t, fake.sentKeys, 1)
+	assert.Equal(t, "x", fake.sentKeys[0])
+}
+
+// Entering focus mode must release a pane tmux left in copy-mode, or every
+// keystroke is consumed as a copy-mode binding and focus mode looks dead.
+func TestEnterFocusMode_ReleasesCopyMode(t *testing.T) {
+	h := newFocusTestHome(t)
+	inst := newStartedInPlaceInstance(t, "copymode-target")
+	defer func() { _ = inst.Kill() }()
+	h.list.AddInstance(inst)
+	h.list.SetSelectedInstance(0)
+
+	_, _ = h.enterFocusMode(inst)
+	require.Equal(t, stateFocus, h.state)
+
+	target, ok := h.focusTarget.(instanceFocusTarget)
+	require.True(t, ok, "the preview tab focuses the instance itself")
+	assert.Same(t, inst, target.inst)
 }

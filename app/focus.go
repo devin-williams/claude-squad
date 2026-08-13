@@ -6,11 +6,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// focusTarget is anywhere focus-mode keystrokes and wheel scrolls can be
-// forwarded to: the selected instance's pane, or the terminal pane's session.
+// focusTarget is anywhere focus-mode keystrokes can be forwarded to: the
+// selected instance's pane, or the terminal pane's session.
 type focusTarget interface {
 	SendKeys(keys string) error
-	SendWheel(up bool) error
+	// ExitCopyMode releases a pane tmux left in copy-mode. Keys sent to a pane
+	// in copy-mode are interpreted as copy-mode commands and never reach the
+	// program, so focus mode would silently swallow everything typed.
+	ExitCopyMode() error
 	Alive() bool
 }
 
@@ -20,7 +23,7 @@ type instanceFocusTarget struct {
 }
 
 func (t instanceFocusTarget) SendKeys(keys string) error { return t.inst.SendKeys(keys) }
-func (t instanceFocusTarget) SendWheel(up bool) error    { return t.inst.SendWheel(up) }
+func (t instanceFocusTarget) ExitCopyMode() error        { return t.inst.ExitCopyMode() }
 func (t instanceFocusTarget) Alive() bool                { return t.inst.TmuxAlive() }
 
 // specialKeySequences maps bubbletea's special (negative) key types to the

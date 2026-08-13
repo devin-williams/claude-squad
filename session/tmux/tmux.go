@@ -253,6 +253,17 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
+// ExitCopyMode releases the pane from copy-mode. tmux enters copy-mode on a
+// wheel scroll whenever the running program has not enabled mouse tracking, and
+// while the pane is in that mode every key we write is consumed as a copy-mode
+// binding instead of reaching the program.
+func (t *TmuxSession) ExitCopyMode() error {
+	// The only expected failure is tmux's "not in a mode", i.e. there was
+	// nothing to cancel — the common case, and not worth surfacing.
+	_ = t.cmdExec.Run(exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "-X", "cancel"))
+	return nil
+}
+
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {

@@ -458,21 +458,12 @@ func (i *Instance) PreviewAndCursor() (content string, cursorX, cursorY int, cur
 	return i.tmuxSession.CapturePaneContentAndCursor()
 }
 
-// SGR mouse button codes for wheel scroll (RFC 1006 / xterm SGR mode).
-const (
-	sgrWheelUp   = 64
-	sgrWheelDown = 65
-)
-
-// SendWheel forwards a mouse-wheel scroll to the session's pane. Alt-screen
-// apps (Claude Code, etc.) scroll their own transcript and ignore the pointer
-// position, so a fixed top-left cell (1;1) is used — always inside the pane.
-func (i *Instance) SendWheel(up bool) error {
-	button := sgrWheelDown
-	if up {
-		button = sgrWheelUp
+// ExitCopyMode releases the pane if tmux has put it in copy-mode.
+func (i *Instance) ExitCopyMode() error {
+	if !i.started || i.tmuxSession == nil {
+		return nil
 	}
-	return i.SendKeys(fmt.Sprintf("\x1b[<%d;1;1M", button))
+	return i.tmuxSession.ExitCopyMode()
 }
 
 func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
