@@ -1,16 +1,22 @@
 package ui
 
 import (
-	"claude-squad/config"
-	"claude-squad/session"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"claude-squad/config"
+	"claude-squad/harness"
+	"claude-squad/session"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -197,21 +203,31 @@ func TestRender_BadgeDoesNotWidenRow_CJKBranch(t *testing.T) {
 
 // TestRender_NarrowWidthDropsBadgeNotBranch verifies that at a width too
 // narrow to fit both, the badge is sacrificed and the branch — the row's
-// identity — survives.
+// identity — survives. 16 is inside the drop threshold (the badge reappears at
+// 18); the badge is only a few cells now that it is the glyph alone.
 func TestRender_NarrowWidthDropsBadgeNotBranch(t *testing.T) {
 	l := newSingleInstanceList(t, "claude")
-	l.SetSize(24, 20)
+	l.SetSize(16, 20)
 
 	rendered := l.String()
-	require.NotContains(t, rendered, "claude", "badge must be dropped at narrow widths")
+	// Assert on the glyph: asserting on the harness name would pass whether or
+	// not the badge rendered, since the row no longer prints the name.
+	require.NotContains(t, rendered, harness.Badge("claude"), "badge must be dropped at narrow widths")
 	require.Contains(t, rendered, branchIcon, "branch must survive even when the badge is dropped")
+}
 
-	// Only the instance's own branch line is in scope here — a pre-existing
-	// header/group-row overflow at very narrow widths is unrelated to the
-	// badge and not this test's concern.
-	for _, line := range strings.Split(rendered, "\n") {
-		if strings.Contains(line, branchIcon) {
-			require.LessOrEqual(t, lipgloss.Width(line), 24, "the branch line may not overflow the configured width")
+// The badge must never push the branch line past the pane at any width. Below
+// 14 the branch line already overflows without a badge at all (a pre-existing
+// upstream issue at absurd widths), so the sweep starts there.
+func TestRender_BadgeNeverOverflowsAtAnyWidth(t *testing.T) {
+	for w := 14; w <= 60; w++ {
+		l := newSingleInstanceList(t, "claude")
+		l.SetSize(w, 20)
+		for _, line := range strings.Split(l.String(), "\n") {
+			if strings.Contains(line, branchIcon) {
+				require.LessOrEqual(t, lipgloss.Width(line), w,
+					"branch line overflows at width %d", w)
+			}
 		}
 	}
 }
@@ -509,4 +525,69 @@ func TestWorkspaceTabs_SurviveViewFilter(t *testing.T) {
 	l.SetViewFilter("ws-a")
 
 	require.Equal(t, []string{"ws-a", "ws-b"}, tabIDs(l))
+}
+
+// cellBackgrounds returns the active background SGR for each visible cell in a
+// rendered line, so a test can assert two adjacent cells are painted the same.
+func cellBackgrounds(line string) (cells []rune, backgrounds []string) {
+	seq := regexp.MustCompile(`^\x1b\[([0-9;]*)m`)
+	bg := ""
+	for i := 0; i < len(line); {
+		if m := seq.FindStringSubmatch(line[i:]); m != nil {
+			params := m[1]
+			switch {
+			case params == "" || params == "0":
+				bg = ""
+			case strings.Contains(params, "48;"):
+				bg = params[strings.Index(params, "48;"):]
+			}
+			i += len(m[0])
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		cells = append(cells, r)
+		backgrounds = append(backgrounds, bg)
+		i += size
+	}
+	return cells, backgrounds
+}
+
+// The badge's padding must carry the row background. Rendered as bare spaces
+// between pre-rendered segments it lands after their ANSI reset, which on a
+// selected row draws black gaps either side of the glyph.
+func TestRender_SelectedBadgeHasNoUnstyledPadding(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	l := newSingleInstanceList(t, "claude")
+	l.SetSize(80, 20)
+	l.SetSelectedInstance(0)
+
+	glyph := []rune(harness.Badge("claude"))[0]
+	var line string
+	for _, ln := range strings.Split(l.String(), "\n") {
+		if strings.ContainsRune(ln, glyph) {
+			line = ln
+			break
+		}
+	}
+	require.NotEmpty(t, line, "the badge should be rendered on the selected row")
+
+	cells, backgrounds := cellBackgrounds(line)
+	idx := -1
+	for i, r := range cells {
+		if r == glyph {
+			idx = i
+			break
+		}
+	}
+	require.Greater(t, idx, 0, "glyph must have a cell before it")
+	require.Less(t, idx, len(cells)-1, "glyph must have a cell after it")
+
+	require.NotEmpty(t, backgrounds[idx], "the glyph itself must sit on the row background")
+	assert.Equal(t, backgrounds[idx], backgrounds[idx-1],
+		"the padding before the badge is unstyled: a black gap on a selected row")
+	assert.Equal(t, backgrounds[idx], backgrounds[idx+1],
+		"the padding after the badge is unstyled: a black gap on a selected row")
 }

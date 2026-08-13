@@ -348,16 +348,20 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	badge, badgeWidth := "", 0
 	if name := tmux.HarnessName(i.Program); name != "" {
-		plain := "  " + harness.Badge(name) + " " + name + " "
-		// Measured, never hardcoded: the badge glyph (e.g. ◆ U+25C6) is
-		// East-Asian Ambiguous width, so runewidth may report 1 or 2 cells
-		// for it depending on terminal — a hardcoded width silently overflows.
-		badgeWidth = runewidth.StringWidth(plain)
-		if badgeWidth > 0 && remainingWidth-badgeWidth >= 4 {
+		glyph := harness.Badge(name)
+		// Measured so the arithmetic matches the string actually emitted: the
+		// glyph may be East-Asian Ambiguous width (◆ U+25C6) or a Private Use
+		// Area codepoint, neither of which has a width we can assume.
+		badgeWidth = runewidth.StringWidth("  " + glyph + " ")
+		if remainingWidth-badgeWidth >= 4 {
 			remainingWidth -= badgeWidth
-			dot := lipgloss.NewStyle().Foreground(harness.DotColor(name)).Background(descS.GetBackground()).Render(harness.Badge(name))
-			label := lipgloss.NewStyle().Background(descS.GetBackground()).Foreground(descS.GetForeground()).Render(name)
-			badge = "  " + dot + " " + label + " "
+			// Every piece carries the row background, padding included. A bare
+			// " " between pre-rendered segments renders after their ANSI reset,
+			// which on a selected row is a black gap around the badge.
+			pad := lipgloss.NewStyle().Background(descS.GetBackground())
+			badge = pad.Render("  ") +
+				pad.Copy().Foreground(harness.DotColor(name)).Render(glyph) +
+				pad.Render(" ")
 		} else {
 			// The badge is the first thing sacrificed at narrow widths — the
 			// branch is the row's identity and must not be dropped for it.
