@@ -800,11 +800,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			if m.textInputOverlay.IsSubmitted() {
 				prompt := m.textInputOverlay.GetValue()
 				selectedBranch := m.textInputOverlay.GetSelectedBranch()
+				branchBase := m.textInputOverlay.GetBranchBase()
 
 				if !selected.Started() {
 					// Shift+N flow: instance not started yet — set branch, start, then send prompt
 					if selectedBranch != "" {
 						selected.SetSelectedBranch(selectedBranch)
+					}
+					if branchBase != "" {
+						selected.SetBaseBranch(branchBase)
 					}
 					selected.Prompt = prompt
 

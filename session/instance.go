@@ -69,8 +69,14 @@ type Instance struct {
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
 
-	// selectedBranch is the existing branch to start on (empty = new branch from HEAD)
+	// selectedBranch is the existing branch to check out and commit onto
+	// (empty = cut a new branch instead).
 	selectedBranch string
+
+	// baseBranch overrides the workspace/config new-session base for this one
+	// session. Only consulted when cutting a new branch, so it and selectedBranch
+	// are never both in play.
+	baseBranch string
 
 	// The below fields are initialized upon calling Start().
 
@@ -237,6 +243,12 @@ func (i *Instance) SetSelectedBranch(branch string) {
 	i.selectedBranch = branch
 }
 
+// SetBaseBranch sets the branch this instance's new branch is cut from,
+// overriding the workspace and config new-session base.
+func (i *Instance) SetBaseBranch(branch string) {
+	i.baseBranch = branch
+}
+
 // tmuxWorkDir returns the directory tmux should start in: the typed
 // subdirectory inside the worktree if it exists there, otherwise the worktree
 // root. The subdirectory can be missing if it's gitignored or only exists on
@@ -305,6 +317,9 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 				if ws := config.LoadWorkspaceRegistry().Get(i.WorkspaceID); ws != nil && ws.BaseBranch != "" {
 					baseBranch = ws.BaseBranch
 				}
+			}
+			if i.baseBranch != "" {
+				baseBranch = i.baseBranch
 			}
 			gitWorktree.SetNewSessionBase(cfg.NewSessionBase.FetchEnabled(), baseBranch)
 			i.gitWorktree = gitWorktree

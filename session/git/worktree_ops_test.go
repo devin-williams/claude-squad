@@ -331,6 +331,55 @@ func TestSetupNewWorktree_FetchFailureWarnsAndFallsBack(t *testing.T) {
 	}
 }
 
+// The "new branch from the branch I picked" mode passes a local base branch that
+// has no remote counterpart, and must cut a new branch rather than check the base
+// out — otherwise it collapses into the existing-branch mode and the session's
+// commits land on the base.
+func TestSetupNewWorktree_LocalBaseBranchCutsNewBranch(t *testing.T) {
+	tempHome := setupTempHome(t)
+
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	initRepoWithCommit(t, repoPath, "main", "README.md", "hello\n", "initial")
+	mustRunGit(t, repoPath, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(repoPath, "develop.txt"), []byte("dev\n"), 0644); err != nil {
+		t.Fatalf("write develop.txt: %v", err)
+	}
+	mustRunGit(t, repoPath, "add", "develop.txt")
+	mustRunGit(t, repoPath, "commit", "-m", "develop work")
+	baseSHA := strings.TrimSpace(mustRunGit(t, repoPath, "rev-parse", "develop"))
+	mustRunGit(t, repoPath, "checkout", "main")
+
+	g := &GitWorktree{
+		repoPath:     repoPath,
+		worktreePath: filepath.Join(tempHome, ".claude-squad", "worktrees", "new-session"),
+		branchName:   "session/new",
+		baseFetch:    true,
+		baseBranch:   "develop",
+	}
+
+	if err := g.Setup(); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+
+	if got := g.GetBaseCommitSHA(); got != baseSHA {
+		t.Fatalf("GetBaseCommitSHA() = %q, want local develop SHA %q", got, baseSHA)
+	}
+	if got := strings.TrimSpace(mustRunGit(t, g.worktreePath, "branch", "--show-current")); got != "session/new" {
+		t.Fatalf("worktree is on %q, want the new session branch", got)
+	}
+	if got := strings.TrimSpace(mustRunGit(t, g.worktreePath, "rev-parse", "HEAD")); got != baseSHA {
+		t.Fatalf("worktree HEAD = %q, want develop's tip %q", got, baseSHA)
+	}
+
+	// Cleanup must take the session branch and leave the base alone.
+	if err := g.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if got := strings.TrimSpace(mustRunGit(t, repoPath, "rev-parse", "develop")); got != baseSHA {
+		t.Fatalf("develop moved or was deleted: %q", got)
+	}
+}
+
 func mustRunGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 

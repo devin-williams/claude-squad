@@ -199,6 +199,15 @@ func (t *TextInputOverlay) GetSelectedBranch() string {
 	return t.branchPicker.GetSelectedBranch()
 }
 
+// GetBranchBase returns the branch a new session branch should be based on, or
+// empty string to use the configured new-session base.
+func (t *TextInputOverlay) GetBranchBase() string {
+	if t.branchPicker == nil {
+		return ""
+	}
+	return t.branchPicker.GetBranchBase()
+}
+
 // BranchFilterVersion returns the current filter version from the branch picker.
 // Returns 0 if no branch picker is present.
 func (t *TextInputOverlay) BranchFilterVersion() uint64 {
