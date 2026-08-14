@@ -417,17 +417,36 @@ func TestRenderBody_SkipsCollapsedAndFiltered(t *testing.T) {
 	l.AddInstance(b1)
 
 	l.ToggleCollapseCurrent() // collapses ws-a, since a1 is selected by default
-	require.Same(t, b1, l.GetSelectedInstance(), "collapsing selected group should move selection off it")
+	require.Same(t, a1, l.GetSelectedInstance(),
+		"collapsing must park the selection on the group so the same key can unfold it")
 
 	order := renderedOrder(l)
 	require.Equal(t, []*session.Instance{b1}, order)
 
 	l.SelectInstance(b1)
 	l.Down()
-	require.Same(t, b1, l.GetSelectedInstance(), "Down should skip the collapsed ws-a group and wrap back to b1")
+	require.Same(t, a1, l.GetSelectedInstance(),
+		"Down must stop once on the collapsed ws-a group, not skip past it")
+	l.Down()
+	require.Same(t, b1, l.GetSelectedInstance(), "Down from the collapsed group skips its hidden members")
 
+	l.SelectInstance(a2)
+	l.Down()
+	require.Same(t, b1, l.GetSelectedInstance(), "a hidden member is not itself a stop")
+
+	l.SelectInstance(b1)
 	l.ToggleCollapseCurrent() // b1 is in ws-b; this toggles ws-b, collapsing everything
 	require.Empty(t, renderedOrder(l))
+
+	// With every group collapsed the headers are the only stops left, and both
+	// must remain reachable — otherwise a fully-folded list is a dead end.
+	l.SelectInstance(a1)
+	l.Down()
+	require.Same(t, b1, l.GetSelectedInstance())
+	l.Up()
+	require.Same(t, a1, l.GetSelectedInstance())
+	l.ToggleCollapseCurrent()
+	require.Equal(t, []*session.Instance{a1, a2}, renderedOrder(l), "z must unfold the group it folded")
 
 	// Un-collapse everything and instead exercise the view filter.
 	l.collapsedWorkspaces = map[string]bool{}
@@ -440,6 +459,40 @@ func TestRenderBody_SkipsCollapsedAndFiltered(t *testing.T) {
 	require.Same(t, a2, l.GetSelectedInstance())
 	l.Down()
 	require.Same(t, a1, l.GetSelectedInstance(), "Down should wrap within the filtered ws-a group, skipping b1")
+}
+
+// A collapsed group renders no item rows, so if its header is not highlighted the
+// cursor is parked somewhere with nothing on screen to show it.
+func TestRenderBody_CollapsedGroupHeaderCarriesTheCursor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.SetSize(80, 40)
+
+	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
+	l.AddInstance(newWorkspacedInstance(t, "b1", "ws-b"))
+
+	lines, anchor := l.renderBody()
+	require.GreaterOrEqual(t, anchor, 0)
+	require.NotContains(t, lines[anchor], "ws-a", "with ws-a expanded the anchor is an item row, not the header")
+
+	l.ToggleCollapseCurrent()
+
+	lines, anchor = l.renderBody()
+	require.GreaterOrEqual(t, anchor, 0, "the collapsed group's header must be the scroll anchor")
+	require.Contains(t, lines[anchor], "ws-a")
+
+	cells, backgrounds := cellBackgrounds(lines[anchor])
+	for i, c := range cells {
+		if c == '▸' {
+			require.NotEmpty(t, backgrounds[i],
+				"the header the cursor sits on must render with the selected background")
+			return
+		}
+	}
+	t.Fatal("collapsed marker not found in the anchored header line")
 }
 
 // seedRegistry points $CLAUDE_SQUAD_HOME at a fresh tmp dir and writes a

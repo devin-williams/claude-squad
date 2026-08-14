@@ -21,6 +21,10 @@ var workspaceHeaderStyle = lipgloss.NewStyle().
 	Bold(true).
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
 
+var selectedWorkspaceHeaderStyle = workspaceHeaderStyle.Copy().
+	Background(lipgloss.Color("#dde4f0")).
+	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
+
 var workspaceTabActiveStyle = lipgloss.NewStyle().
 	Padding(0, 1).
 	Bold(true).
@@ -126,8 +130,11 @@ func (l *List) GetViewFilter() string {
 	return l.viewFilter
 }
 
-// ToggleCollapseCurrent folds/unfolds the workspace group containing the current selection.
-// If folding hides the selection, selection jumps to the next visible item.
+// ToggleCollapseCurrent folds/unfolds the workspace group containing the current
+// selection. Folding parks the selection on that group's first row — the row the
+// collapsed header stands in for — so pressing the key again unfolds the same
+// group. Moving the selection out instead would strand it: nothing inside a
+// collapsed group is selectable, so there would be no way back to it.
 func (l *List) ToggleCollapseCurrent() {
 	sel := l.GetSelectedInstance()
 	if sel == nil {
@@ -180,35 +187,56 @@ func (l *List) WorkspaceIDs() []string {
 	return out
 }
 
-// isItemVisible reports whether the given instance is currently rendered
-// (i.e. passes the view filter and is not inside a collapsed group).
-func (l *List) isItemVisible(inst *session.Instance) bool {
+// isIndexSelectable reports whether the item at i can hold the selection. That is
+// not the same as being rendered: a collapsed group draws no item rows, but its
+// first index stays selectable and the group header renders highlighted in its
+// place, which is what makes the group reachable again to unfold.
+func (l *List) isIndexSelectable(i int) bool {
+	inst := l.items[i]
 	if l.viewFilter != "" && inst.WorkspaceID != l.viewFilter {
 		return false
 	}
 	if l.collapsedWorkspaces[inst.WorkspaceID] {
-		return false
+		return l.isGroupStart(i)
 	}
 	return true
 }
 
-// ensureSelectionVisible nudges the selection forward (then backward) to the
-// nearest visible item if the current selection has been hidden by filter/collapse.
+// isGroupStart reports whether i begins a workspace group. reorderItems keeps
+// each workspace's items contiguous, so one comparison is enough.
+func (l *List) isGroupStart(i int) bool {
+	return i == 0 || l.items[i-1].WorkspaceID != l.items[i].WorkspaceID
+}
+
+// ensureSelectionVisible nudges the selection to the nearest selectable item if
+// the current one was hidden by filter/collapse. A selection inside a group that
+// just collapsed snaps to that group's header rather than leaving the group.
 func (l *List) ensureSelectionVisible() {
 	if len(l.items) == 0 {
 		return
 	}
-	if l.selectedIdx < len(l.items) && l.isItemVisible(l.items[l.selectedIdx]) {
+	if l.selectedIdx < len(l.items) && l.isIndexSelectable(l.selectedIdx) {
 		return
 	}
+	if l.selectedIdx < len(l.items) && l.collapsedWorkspaces[l.items[l.selectedIdx].WorkspaceID] {
+		for i := l.selectedIdx; i >= 0; i-- {
+			if l.isGroupStart(i) {
+				if l.isIndexSelectable(i) {
+					l.selectedIdx = i
+					return
+				}
+				break
+			}
+		}
+	}
 	for i := l.selectedIdx + 1; i < len(l.items); i++ {
-		if l.isItemVisible(l.items[i]) {
+		if l.isIndexSelectable(i) {
 			l.selectedIdx = i
 			return
 		}
 	}
 	for i := l.selectedIdx - 1; i >= 0; i-- {
-		if l.isItemVisible(l.items[i]) {
+		if l.isIndexSelectable(i) {
 			l.selectedIdx = i
 			return
 		}
@@ -525,7 +553,14 @@ func (l *List) renderBody() ([]string, int) {
 				marker = "▸"
 			}
 			label := workspaceLabel(reg, currentGroupID)
-			lines = append(lines, workspaceHeaderStyle.Render(fmt.Sprintf("%s %s (%d)", marker, label, counts[currentGroupID])))
+			headerStyle := workspaceHeaderStyle
+			// A collapsed group draws no item rows, so the header is the only thing
+			// left to carry the cursor.
+			if collapsed && l.selectedIdx < len(l.items) && l.items[l.selectedIdx].WorkspaceID == currentGroupID {
+				headerStyle = selectedWorkspaceHeaderStyle
+				selectedLine = len(lines)
+			}
+			lines = append(lines, headerStyle.Render(fmt.Sprintf("%s %s (%d)", marker, label, counts[currentGroupID])))
 		}
 		if l.collapsedWorkspaces[currentGroupID] {
 			continue
@@ -771,13 +806,13 @@ func (l *List) Down() {
 		return
 	}
 	for i := l.selectedIdx + 1; i < len(l.items); i++ {
-		if l.isItemVisible(l.items[i]) {
+		if l.isIndexSelectable(i) {
 			l.selectedIdx = i
 			return
 		}
 	}
 	for i := 0; i <= l.selectedIdx; i++ {
-		if l.isItemVisible(l.items[i]) {
+		if l.isIndexSelectable(i) {
 			l.selectedIdx = i
 			return
 		}
@@ -825,13 +860,13 @@ func (l *List) Up() {
 		return
 	}
 	for i := l.selectedIdx - 1; i >= 0; i-- {
-		if l.isItemVisible(l.items[i]) {
+		if l.isIndexSelectable(i) {
 			l.selectedIdx = i
 			return
 		}
 	}
 	for i := len(l.items) - 1; i >= l.selectedIdx; i-- {
-		if l.isItemVisible(l.items[i]) {
+		if l.isIndexSelectable(i) {
 			l.selectedIdx = i
 			return
 		}
