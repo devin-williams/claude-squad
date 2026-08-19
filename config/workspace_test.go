@@ -236,3 +236,55 @@ func TestWorkspace_FindProfileAndPaths(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/custom/path", root)
 }
+
+// Registry order is the workspace display order, so a swap has to survive the
+// process — an in-memory reorder would look right until the next launch.
+func TestSwapWorkspaces_ReordersAndPersists(t *testing.T) {
+	scopeConfigHome(t)
+
+	reg := LoadWorkspaceRegistry()
+	// Copy the ids out: EnsureWorkspace hands back a pointer into r.Workspaces,
+	// so after a swap a held pointer reads its new neighbour's data.
+	mustEnsure := func(path string) string {
+		t.Helper()
+		ws, err := reg.EnsureWorkspace(path, "")
+		require.NoError(t, err)
+		return ws.ID
+	}
+	aID := mustEnsure("/Users/x/alpha")
+	bID := mustEnsure("/Users/x/bravo")
+	cID := mustEnsure("/Users/x/charlie")
+
+	ids := func(r *WorkspaceRegistry) []string {
+		out := make([]string, 0, len(r.Workspaces))
+		for _, w := range r.Workspaces {
+			out = append(out, w.ID)
+		}
+		return out
+	}
+	require.Equal(t, []string{aID, bID, cID}, ids(reg))
+
+	require.NoError(t, reg.SwapWorkspaces(aID, cID))
+	assert.Equal(t, []string{cID, bID, aID}, ids(reg))
+	assert.Equal(t, []string{cID, bID, aID}, ids(LoadWorkspaceRegistry()), "swap must persist")
+
+	// Non-adjacent and reverse-argument swaps are the same operation.
+	require.NoError(t, reg.SwapWorkspaces(aID, cID))
+	assert.Equal(t, []string{aID, bID, cID}, ids(LoadWorkspaceRegistry()))
+}
+
+// An orphan workspace has no registry slot, so its move must fail loudly rather
+// than silently reordering some other pair.
+func TestSwapWorkspaces_RejectsUnregistered(t *testing.T) {
+	scopeConfigHome(t)
+
+	reg := LoadWorkspaceRegistry()
+	a, err := reg.EnsureWorkspace("/Users/x/alpha", "")
+	require.NoError(t, err)
+
+	assert.Error(t, reg.SwapWorkspaces(a.ID, "ws-gone"))
+	assert.Error(t, reg.SwapWorkspaces("ws-gone", a.ID))
+	assert.Error(t, reg.SwapWorkspaces("ws-gone", "ws-also-gone"))
+	assert.NoError(t, reg.SwapWorkspaces(a.ID, a.ID), "swapping a workspace with itself is a no-op")
+	assert.Equal(t, 1, len(LoadWorkspaceRegistry().Workspaces))
+}

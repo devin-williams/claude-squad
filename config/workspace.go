@@ -157,6 +157,36 @@ func (r *WorkspaceRegistry) Upsert(ws Workspace) error {
 	return r.saveLocked()
 }
 
+// SwapWorkspaces exchanges two workspaces' positions. Registry order is the
+// display order of both the tab strip and the list's sections, so this is the
+// durable form of "move this section" — item order cannot carry it, being
+// derived from the order sessions load.
+func (r *WorkspaceRegistry) SwapWorkspaces(idA, idB string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	i, j := -1, -1
+	for k := range r.Workspaces {
+		// Two ifs rather than a switch: with idA == idB a switch matches only the
+		// first case, leaving j unset and turning a no-op into an error.
+		if r.Workspaces[k].ID == idA {
+			i = k
+		}
+		if r.Workspaces[k].ID == idB {
+			j = k
+		}
+	}
+	if i < 0 || j < 0 {
+		return fmt.Errorf("cannot swap %q with %q: not both registered", idA, idB)
+	}
+	if i == j {
+		return nil
+	}
+
+	r.Workspaces[i], r.Workspaces[j] = r.Workspaces[j], r.Workspaces[i]
+	return r.saveLocked()
+}
+
 func (r *WorkspaceRegistry) Remove(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

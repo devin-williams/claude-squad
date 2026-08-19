@@ -698,3 +698,141 @@ func tabStripIDs(l *List) []string {
 	}
 	return out
 }
+
+// registryIDs reads the persisted workspace order back off disk, which is where
+// a section move has to land to survive a restart.
+func registryIDs(t *testing.T) []string {
+	t.Helper()
+	reg := config.LoadWorkspaceRegistry()
+	out := make([]string, 0, len(reg.Workspaces))
+	for _, w := range reg.Workspaces {
+		out = append(out, w.ID)
+	}
+	return out
+}
+
+// Sections, tabs and the cycling keys must agree, so the body follows registry
+// order too rather than the order sessions happened to be created in.
+func TestReorderItems_FollowsRegistryOrder(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	b1 := newWorkspacedInstance(t, "b1", "ws-b")
+	a1 := newWorkspacedInstance(t, "a1", "ws-a")
+	l.AddInstance(b1)
+	l.AddInstance(a1)
+
+	require.Equal(t, []*session.Instance{a1, b1}, l.items,
+		"ws-a is first in the registry even though ws-b's session was created first")
+}
+
+// An orphan has no registry slot to order it by and must not displace a
+// registered workspace.
+func TestReorderItems_OrphansSortLast(t *testing.T) {
+	seedRegistry(t, "ws-a")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	gone := newWorkspacedInstance(t, "gone1", "ws-gone")
+	none := newWorkspacedInstance(t, "none1", "")
+	a1 := newWorkspacedInstance(t, "a1", "ws-a")
+	l.AddInstance(gone)
+	l.AddInstance(none)
+	l.AddInstance(a1)
+
+	require.Equal(t, []*session.Instance{a1, gone, none}, l.items)
+}
+
+func TestMoveSection_MovesWholeGroupAndPersists(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.SetSize(80, 40)
+	a1 := newWorkspacedInstance(t, "a1", "ws-a")
+	a2 := newWorkspacedInstance(t, "a2", "ws-a")
+	b1 := newWorkspacedInstance(t, "b1", "ws-b")
+	l.AddInstance(a1)
+	l.AddInstance(a2)
+	l.AddInstance(b1)
+
+	l.SelectInstance(a1)
+	l.ToggleCollapseCurrent()
+	require.True(t, l.MoveDown(), "J on a collapsed group moves the section")
+
+	require.Equal(t, []*session.Instance{b1, a1, a2}, l.items, "the whole group moved, members intact")
+	require.Equal(t, []string{"ws-b", "ws-a"}, l.WorkspaceTabIDs(), "the tab strip follows")
+	require.Equal(t, []string{"ws-b", "ws-a"}, registryIDs(t), "the new order is persisted")
+	require.Same(t, a1, l.GetSelectedInstance(), "the cursor rides along with its section")
+
+	require.True(t, l.MoveUp(), "K moves it back")
+	require.Equal(t, []string{"ws-a", "ws-b"}, registryIDs(t))
+}
+
+// The registry holds workspaces that have no section on screen. Swapping with the
+// adjacent registry entry instead of the adjacent visible section would persist a
+// write that moves nothing.
+func TestMoveSection_SwapsVisibleNeighbourNotRegistryNeighbour(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-hidden", "ws-c")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.SetSize(80, 40)
+	a1 := newWorkspacedInstance(t, "a1", "ws-a")
+	c1 := newWorkspacedInstance(t, "c1", "ws-c")
+	l.AddInstance(a1)
+	l.AddInstance(c1)
+	require.Equal(t, []string{"ws-a", "ws-c"}, l.WorkspaceTabIDs(), "ws-hidden has no sessions, so no tab")
+
+	l.SelectInstance(c1)
+	l.ToggleCollapseCurrent()
+	require.True(t, l.MoveUp())
+
+	require.Equal(t, []string{"ws-c", "ws-a"}, l.WorkspaceTabIDs(), "the visible order must actually change")
+	require.Equal(t, []string{"ws-c", "ws-hidden", "ws-a"}, registryIDs(t),
+		"ws-hidden keeps its slot; the two visible workspaces traded places")
+}
+
+func TestMoveSection_RefusesAtTheEndsAndForOrphans(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.SetSize(80, 40)
+	a1 := newWorkspacedInstance(t, "a1", "ws-a")
+	b1 := newWorkspacedInstance(t, "b1", "ws-b")
+	orphan := newWorkspacedInstance(t, "o1", "ws-gone")
+	l.AddInstance(a1)
+	l.AddInstance(b1)
+	l.AddInstance(orphan)
+
+	l.SelectInstance(a1)
+	l.ToggleCollapseCurrent()
+	require.False(t, l.MoveUp(), "the first section cannot move up")
+
+	l.SelectInstance(orphan)
+	l.ToggleCollapseCurrent()
+	require.False(t, l.MoveUp(), "an orphan has no registry slot to reorder")
+	require.False(t, l.MoveDown(), "and it is last anyway")
+	require.Equal(t, []string{"ws-a", "ws-b"}, registryIDs(t), "a refused move writes nothing")
+}
+
+// The section move must not cost the old behaviour: on a visible row J/K still
+// reorder sessions inside their group.
+func TestMoveSection_ExpandedGroupStillMovesSessions(t *testing.T) {
+	seedRegistry(t, "ws-a")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.SetSize(80, 40)
+	a1 := newWorkspacedInstance(t, "a1", "ws-a")
+	a2 := newWorkspacedInstance(t, "a2", "ws-a")
+	l.AddInstance(a1)
+	l.AddInstance(a2)
+
+	l.SelectInstance(a1)
+	require.True(t, l.MoveDown())
+	require.Equal(t, []*session.Instance{a2, a1}, l.items)
+	require.Equal(t, []string{"ws-a"}, registryIDs(t), "a session move must not touch the registry")
+}

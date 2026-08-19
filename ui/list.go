@@ -734,10 +734,15 @@ func (l *List) groupedItems() []instanceGroup {
 }
 
 // reorderItems sorts l.items into display order: grouped by WorkspaceID, groups
-// in first-appearance order with unknown-workspace groups pushed last, and
-// insertion order preserved within each group. It is the single source of
-// truth for ordering — renderBody and groupedItems both walk this order
-// directly rather than maintaining a separate index.
+// in registry order with unregistered workspaces pushed last, and insertion
+// order preserved within each group. It is the single source of truth for
+// ordering — renderBody and groupedItems both walk this order directly rather
+// than maintaining a separate index.
+//
+// Registry order rather than first-appearance order is what lets the sections,
+// the tab strip and the workspace-cycling keys agree, and it is the only one of
+// the three that survives a restart: item order is a product of how sessions
+// happen to load.
 //
 // Call this whenever the item set or any WorkspaceID assignment changes.
 func (l *List) reorderItems() {
@@ -747,29 +752,20 @@ func (l *List) reorderItems() {
 	}
 
 	reg := config.LoadWorkspaceRegistry()
-	var order []string
-	seen := map[string]bool{}
-	labels := map[string]string{}
+	rank := make(map[string]int, len(reg.Workspaces))
+	for i, w := range reg.Workspaces {
+		rank[w.ID] = i
+	}
+	// An orphan (or an instance with no workspace at all) has no registry slot to
+	// order it by, so it sorts after everything registered, keeping the order it
+	// first appeared in.
+	next := len(reg.Workspaces)
 	for _, inst := range l.items {
-		key := inst.WorkspaceID
-		if seen[key] {
+		if _, ok := rank[inst.WorkspaceID]; ok {
 			continue
 		}
-		seen[key] = true
-		order = append(order, key)
-		labels[key] = workspaceLabel(reg, key)
-	}
-	sort.SliceStable(order, func(i, j int) bool {
-		iUnknown := labels[order[i]] == unknownWorkspaceLabel
-		jUnknown := labels[order[j]] == unknownWorkspaceLabel
-		if iUnknown != jUnknown {
-			return jUnknown
-		}
-		return false
-	})
-	rank := make(map[string]int, len(order))
-	for i, k := range order {
-		rank[k] = i
+		rank[inst.WorkspaceID] = next
+		next++
 	}
 
 	sort.SliceStable(l.items, func(i, j int) bool {
@@ -934,10 +930,66 @@ func (l *List) SelectInstance(target *session.Instance) {
 	}
 }
 
+// cursorOnCollapsedGroup reports whether the selection is standing in for a
+// folded group rather than pointing at a visible row.
+func (l *List) cursorOnCollapsedGroup() bool {
+	sel := l.GetSelectedInstance()
+	return sel != nil && l.collapsedWorkspaces[sel.WorkspaceID]
+}
+
+// moveSection swaps the selected workspace with its neighbour, persisting the
+// new order in the registry.
+//
+// The neighbour is taken from display order, not from the adjacent registry
+// entry: the registry also holds workspaces with no section on screen, and
+// swapping with one of those would write a change that moves nothing visible.
+// An orphan has no registry slot at all, so moving one is refused rather than
+// half-applied.
+func (l *List) moveSection(delta int) bool {
+	sel := l.GetSelectedInstance()
+	if sel == nil {
+		return false
+	}
+
+	ids := l.WorkspaceTabIDs()
+	pos := -1
+	for i, id := range ids {
+		if id == sel.WorkspaceID {
+			pos = i
+			break
+		}
+	}
+	target := pos + delta
+	if pos < 0 || target < 0 || target >= len(ids) {
+		return false
+	}
+
+	reg := config.LoadWorkspaceRegistry()
+	// Refuse an unregistered workspace up front. Letting the swap reject it would
+	// report an expected refusal as an error, and the log is not wired up in every
+	// caller.
+	if reg.Get(ids[pos]) == nil || reg.Get(ids[target]) == nil {
+		return false
+	}
+	if err := reg.SwapWorkspaces(ids[pos], ids[target]); err != nil {
+		log.ErrorLog.Printf("could not move workspace section: %v", err)
+		return false
+	}
+	l.reorderItems()
+	return true
+}
+
 // MoveUp swaps the selected instance with the one above it. It refuses to
 // cross a workspace group boundary — l.items is kept in grouped display
 // order, and reorderItems would just snap a cross-group move back anyway.
+//
+// On a collapsed group it moves the whole section instead. Swapping the hidden
+// members of a folded group is the one thing it cannot usefully mean, and the
+// cursor is already parked on the group rather than on any one row.
 func (l *List) MoveUp() bool {
+	if l.cursorOnCollapsedGroup() {
+		return l.moveSection(-1)
+	}
 	if l.selectedIdx <= 0 || len(l.items) < 2 {
 		return false
 	}
@@ -950,8 +1002,12 @@ func (l *List) MoveUp() bool {
 }
 
 // MoveDown swaps the selected instance with the one below it. Same group
-// boundary constraint as MoveUp.
+// boundary constraint as MoveUp, and the same section-move behaviour on a
+// collapsed group.
 func (l *List) MoveDown() bool {
+	if l.cursorOnCollapsedGroup() {
+		return l.moveSection(1)
+	}
 	if l.selectedIdx >= len(l.items)-1 || len(l.items) < 2 {
 		return false
 	}
