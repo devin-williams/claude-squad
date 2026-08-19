@@ -232,24 +232,53 @@ func TestRender_BadgeNeverOverflowsAtAnyWidth(t *testing.T) {
 	}
 }
 
-func TestWorkspaceIDs(t *testing.T) {
+// The workspace keys step through this list, so it has to be the order the tab
+// strip renders — registry order — and not the order sessions happened to be
+// created in. The two differ here, which is the normal case.
+func TestWorkspaceTabIDs_FollowsRegistryOrderNotFirstAppearance(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b", "ws-c")
+
 	s := spinner.New()
 	l := NewList(&s, false)
-	for _, ws := range []string{"ws-b", "ws-a", "ws-b", "ws-c", "ws-a"} {
-		inst, err := session.NewInstance(session.InstanceOptions{Title: ws + "-s", Path: ".", Program: "echo"})
-		require.NoError(t, err)
-		inst.WorkspaceID = ws
-		l.AddInstance(inst)
+	for _, ws := range []string{"ws-b", "ws-c", "ws-b", "ws-a"} {
+		l.AddInstance(newWorkspacedInstance(t, ws+"-s", ws))
 	}
 
-	// First-appearance order, duplicates collapsed — stable and matches what
-	// the user sees rather than an alphabetical reshuffle.
-	require.Equal(t, []string{"ws-b", "ws-a", "ws-c"}, l.WorkspaceIDs())
+	require.Equal(t, []string{"ws-a", "ws-b", "ws-c"}, l.WorkspaceTabIDs())
+	require.Equal(t, l.WorkspaceTabIDs(), tabStripIDs(l),
+		"the cycle order and the rendered strip must be the same list")
 }
 
-func TestWorkspaceIDsEmpty(t *testing.T) {
+// An orphan (its workspace deleted out from under live sessions) has no registry
+// entry to order it by, and still needs a reachable stop.
+func TestWorkspaceTabIDs_OrphansFollowRegisteredTabs(t *testing.T) {
+	seedRegistry(t, "ws-a")
+
 	s := spinner.New()
-	require.Empty(t, NewList(&s, false).WorkspaceIDs())
+	l := NewList(&s, false)
+	l.AddInstance(newWorkspacedInstance(t, "orphan-s", "ws-gone"))
+	l.AddInstance(newWorkspacedInstance(t, "a-s", "ws-a"))
+
+	require.Equal(t, []string{"ws-a", "ws-gone"}, l.WorkspaceTabIDs())
+	require.Equal(t, l.WorkspaceTabIDs(), tabStripIDs(l))
+}
+
+// The active workspace keeps a tab while empty, so cycling must be able to land
+// on it — otherwise the strip shows a stop the keys skip over.
+func TestWorkspaceTabIDs_IncludesEmptyActiveWorkspace(t *testing.T) {
+	seedRegistry(t, "ws-a", "ws-b")
+
+	s := spinner.New()
+	l := NewList(&s, false)
+	l.AddInstance(newWorkspacedInstance(t, "a-s", "ws-a"))
+	l.SetActiveWorkspaceID("ws-b")
+
+	require.Equal(t, []string{"ws-a", "ws-b"}, l.WorkspaceTabIDs())
+}
+
+func TestWorkspaceTabIDsEmpty(t *testing.T) {
+	s := spinner.New()
+	require.Empty(t, NewList(&s, false).WorkspaceTabIDs())
 }
 
 // TestReorderItems_InterleavedWorkspacesGroup verifies that instances added
@@ -517,15 +546,6 @@ func seedRegistry(t *testing.T, ids ...string) {
 	require.NoError(t, reg.Save())
 }
 
-func tabIDs(l *List) []string {
-	tabs := l.workspaceTabDescriptors(l.groupedItems())
-	out := make([]string, 0, len(tabs))
-	for _, t := range tabs {
-		out = append(out, t.id)
-	}
-	return out
-}
-
 // The registry accumulates every repo ever used, so a tab per registered
 // workspace clutters the strip with destinations that can only show an empty
 // list.
@@ -537,7 +557,7 @@ func TestWorkspaceTabs_OmitWorkspacesWithoutSessions(t *testing.T) {
 	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
 	l.AddInstance(newWorkspacedInstance(t, "c1", "ws-c"))
 
-	require.Equal(t, []string{"ws-a", "ws-c"}, tabIDs(l), "ws-b holds no sessions and must not get a tab")
+	require.Equal(t, []string{"ws-a", "ws-c"}, l.WorkspaceTabIDs(), "ws-b holds no sessions and must not get a tab")
 	require.Contains(t, l.renderCountSummary(l.workspaceTabDescriptors(l.groupedItems())), "2 workspaces")
 }
 
@@ -551,7 +571,7 @@ func TestWorkspaceTabs_KeepEmptyActiveWorkspace(t *testing.T) {
 	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
 	l.SetActiveWorkspaceID("ws-b")
 
-	require.Equal(t, []string{"ws-a", "ws-b"}, tabIDs(l))
+	require.Equal(t, []string{"ws-a", "ws-b"}, l.WorkspaceTabIDs())
 }
 
 // A tab is still owed to instances whose workspace was removed from the
@@ -564,7 +584,7 @@ func TestWorkspaceTabs_KeepOrphanWorkspaces(t *testing.T) {
 	l.AddInstance(newWorkspacedInstance(t, "a1", "ws-a"))
 	l.AddInstance(newWorkspacedInstance(t, "gone", "ws-deleted"))
 
-	require.Equal(t, []string{"ws-a", "ws-deleted"}, tabIDs(l))
+	require.Equal(t, []string{"ws-a", "ws-deleted"}, l.WorkspaceTabIDs())
 }
 
 // Filtering must not hide the other tabs, or there is no way to filter back.
@@ -577,7 +597,7 @@ func TestWorkspaceTabs_SurviveViewFilter(t *testing.T) {
 	l.AddInstance(newWorkspacedInstance(t, "b1", "ws-b"))
 	l.SetViewFilter("ws-a")
 
-	require.Equal(t, []string{"ws-a", "ws-b"}, tabIDs(l))
+	require.Equal(t, []string{"ws-a", "ws-b"}, l.WorkspaceTabIDs())
 }
 
 // cellBackgrounds returns the active background SGR for each visible cell in a
@@ -643,4 +663,38 @@ func TestRender_SelectedBadgeHasNoUnstyledPadding(t *testing.T) {
 		"the padding before the badge is unstyled: a black gap on a selected row")
 	assert.Equal(t, backgrounds[idx], backgrounds[idx+1],
 		"the padding after the badge is unstyled: a black gap on a selected row")
+}
+
+// tabStripIDs recovers the tab order from the rendered strip by matching each
+// cell's label back to a descriptor, so a test can compare the cycle order
+// against what is actually on screen rather than against the same call again.
+func tabStripIDs(l *List) []string {
+	tabs := l.workspaceTabDescriptors(l.groupedItems())
+	byLabel := make(map[string]string, len(tabs))
+	for _, t := range tabs {
+		byLabel[t.label] = t.id
+	}
+
+	// Positional rather than whitespace-split: an orphan's label is
+	// "(unknown workspace)", which no field-splitting scheme can match back.
+	strip := stripANSI(l.renderWorkspaceTabs(tabs))
+	type placed struct {
+		at int
+		id string
+	}
+	var found []placed
+	for label, id := range byLabel {
+		at := strings.Index(strip, label)
+		if at < 0 {
+			continue
+		}
+		found = append(found, placed{at, id})
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].at < found[j].at })
+
+	out := make([]string, 0, len(found))
+	for _, f := range found {
+		out = append(out, f.id)
+	}
+	return out
 }

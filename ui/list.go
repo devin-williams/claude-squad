@@ -172,17 +172,16 @@ func (l *List) WorkspaceCount() int {
 	return len(seen)
 }
 
-// WorkspaceIDs returns the distinct workspace ids present in the list, in
-// first-appearance order.
-func (l *List) WorkspaceIDs() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, inst := range l.items {
-		if seen[inst.WorkspaceID] {
-			continue
-		}
-		seen[inst.WorkspaceID] = true
-		out = append(out, inst.WorkspaceID)
+// WorkspaceTabIDs returns the workspace ids in tab-strip order, which is the
+// order a user cycling with the workspace keys sees them move. Deriving it from
+// the same descriptors the strip renders is the point: an independently-built
+// list drifts out of the displayed order as soon as the two disagree about
+// ordering or about which workspaces get a tab at all.
+func (l *List) WorkspaceTabIDs() []string {
+	tabs := l.workspaceTabDescriptors(l.groupedItems())
+	out := make([]string, 0, len(tabs))
+	for _, t := range tabs {
+		out = append(out, t.id)
 	}
 	return out
 }

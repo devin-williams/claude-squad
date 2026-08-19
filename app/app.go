@@ -213,11 +213,12 @@ func (m *home) applyWorkspaceFocus(id string) {
 }
 
 // cycleWorkspace moves the view filter to the previous (delta -1) or next
-// (delta +1) stop in the cycle All -> ws1 -> ws2 -> ... -> All, wrapping at
-// both ends. Landing on a workspace also makes it the active workspace via
-// applyWorkspaceFocus; landing on All only clears the filter.
+// (delta +1) stop, following the tab strip left to right: All -> tab 1 ->
+// tab 2 -> ... -> All, wrapping at both ends. Landing on a workspace also makes
+// it the active workspace via applyWorkspaceFocus; landing on All only clears
+// the filter.
 func (m *home) cycleWorkspace(delta int) {
-	ids := m.list.WorkspaceIDs()
+	ids := m.list.WorkspaceTabIDs()
 	if len(ids) == 0 {
 		return
 	}
