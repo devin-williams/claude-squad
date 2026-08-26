@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,20 +49,58 @@ func TestResumeProgram_IgnoresEmptyProjectDirectory(t *testing.T) {
 	assert.Equal(t, "claude", resumeProgram("claude", workDir))
 }
 
-func TestResumeProgram_CursorKeysChatsByMD5OfWorkDir(t *testing.T) {
+// writeCursorChat creates one chat under workDir's chat directory.
+func writeCursorChat(t *testing.T, home, workDir, id string, hasConversation bool, updatedAtMs int64) {
+	t.Helper()
+	dir := filepath.Join(home, ".cursor", "chats", cursorChatDir(workDir), id)
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	meta := fmt.Sprintf(`{"schemaVersion":1,"hasConversation":%t,"updatedAtMs":%d,"cwd":%q}`,
+		hasConversation, updatedAtMs, workDir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0644))
+}
+
+func TestResumeProgram_CursorNamesTheChatExplicitly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workDir := filepath.Join(home, "wt")
 
 	assert.Equal(t, "cursor-agent", resumeProgram("cursor-agent", workDir))
 
-	// 5c1e... is md5(workDir); computed the same way the store does, since the
-	// point of the test is the lookup, not the hash function.
-	chat := filepath.Join(home, ".cursor", "chats", cursorChatDir(workDir), "chat-id")
-	require.NoError(t, os.MkdirAll(chat, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(chat, "meta.json"), []byte("{}"), 0644))
+	writeCursorChat(t, home, workDir, "real-chat", true, 1_000)
+	assert.Equal(t, "cursor-agent --resume real-chat", resumeProgram("cursor-agent", workDir))
+}
 
-	assert.Equal(t, "cursor-agent --continue", resumeProgram("cursor-agent", workDir))
+// cursor-agent creates a chat directory the moment it starts, so a session
+// started fresh leaves an empty chat that is NEWER than the real one. --continue
+// takes the newest, which resumed that empty shell and looked exactly like the
+// resume silently failing.
+func TestResumeProgram_CursorSkipsTheEmptyChatAFreshStartLeaves(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "wt")
+
+	writeCursorChat(t, home, workDir, "real-chat", true, 1_000)
+	writeCursorChat(t, home, workDir, "empty-shell", false, 9_999)
+
+	assert.Equal(t, "cursor-agent --resume real-chat", resumeProgram("cursor-agent", workDir),
+		"the newest chat is an empty shell; the newest chat with content is the one to reopen")
+}
+
+// Only empty shells means there is nothing to resume, and --resume with no id
+// would open an interactive picker in a detached pane.
+func TestResumeProgram_CursorWithOnlyEmptyChats(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "wt")
+
+	writeCursorChat(t, home, workDir, "empty-shell", false, 9_999)
+	assert.Equal(t, "cursor-agent", resumeProgram("cursor-agent", workDir))
+}
+
+// A blanked program would leave tmux running the default shell with no agent.
+func TestResumeProgram_NeverReturnsAnEmptyProgram(t *testing.T) {
+	t.Setenv("HOME", "")
+	assert.NotEmpty(t, resumeProgram("claude", "/tmp/wt"))
 }
 
 func TestResumeProgram_LeavesUnknownHarnessesAndExplicitFlagsAlone(t *testing.T) {
