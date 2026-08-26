@@ -359,3 +359,46 @@ func TestFromInstanceData_UnrecoverableSessionBecomesPausedNotFatal(t *testing.T
 	assert.Equal(t, Paused, inst.Status, "paused is the honest state: started, no live tmux")
 	assert.True(t, inst.Started(), "r must be able to retry the recreate")
 }
+
+// Resume recreates the worktree because Pause removed it. When the directory is
+// still there — a session paused because its tmux could not be revived — the
+// recreate is a force-remove-and-re-add that silently discards every
+// uncommitted change in it.
+func TestResume_DoesNotWipeAnIntactWorktree(t *testing.T) {
+	inst, _ := startedTestInstance(t, "resume-intact")
+
+	wt, err := inst.GetGitWorktree()
+	require.NoError(t, err)
+	canary := filepath.Join(wt.GetWorktreePath(), "uncommitted.txt")
+	require.NoError(t, os.WriteFile(canary, []byte("work in progress\n"), 0644))
+
+	h := &reviveHarness{t: t}
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("resume-intact", "echo", "", h, h.exec()))
+	inst.SetStatus(Paused)
+
+	require.NoError(t, inst.Resume())
+
+	assert.FileExists(t, canary, "resuming onto an intact worktree must not discard uncommitted work")
+	assert.Equal(t, Running, inst.Status)
+}
+
+// The converse: the normal pause/resume cycle has no worktree on disk, and
+// resuming must still recreate it.
+func TestResume_RecreatesAMissingWorktree(t *testing.T) {
+	inst, _ := startedTestInstance(t, "resume-missing")
+
+	wt, err := inst.GetGitWorktree()
+	require.NoError(t, err)
+	worktreePath := wt.GetWorktreePath()
+
+	h := &reviveHarness{t: t}
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("resume-missing", "echo", "", h, h.exec()))
+	require.NoError(t, inst.Pause())
+	require.NoDirExists(t, worktreePath, "Pause removes the worktree")
+
+	h2 := &reviveHarness{t: t}
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("resume-missing", "echo", "", h2, h2.exec()))
+	require.NoError(t, inst.Resume())
+
+	assert.DirExists(t, worktreePath, "resuming a genuinely paused session must recreate its worktree")
+}

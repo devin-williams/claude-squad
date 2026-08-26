@@ -112,6 +112,19 @@ func newTmuxSession(name, program, workspaceID string, ptyFactory PtyFactory, cm
 // via "tmux new-session -e KEY=VALUE", which works even when joining an existing tmux server
 // (fixes the env-staleness behavior reported in #277).
 func (t *TmuxSession) Start(workDir string, env []string) error {
+	return t.start(workDir, env, t.program)
+}
+
+// StartResuming starts the session on the harness's most recent conversation for
+// workDir, when one is stored on disk. Used when reviving a session whose tmux
+// server went away: the worktree and the conversation both outlive tmux, so a
+// revive that dropped the conversation would throw away the only part of the
+// session that cannot be reconstructed from the repo.
+func (t *TmuxSession) StartResuming(workDir string, env []string) error {
+	return t.start(workDir, env, resumeProgram(t.program, workDir))
+}
+
+func (t *TmuxSession) start(workDir string, env []string, program string) error {
 	// Check if the session already exists
 	if t.DoesSessionExist() {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
@@ -121,7 +134,7 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 	for _, kv := range env {
 		args = append(args, "-e", kv)
 	}
-	args = append(args, "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
+	args = append(args, "-d", "-s", t.sanitizedName, "-c", workDir, program)
 	cmd := exec.Command("tmux", args...)
 
 	ptmx, err := t.ptyFactory.Start(cmd)

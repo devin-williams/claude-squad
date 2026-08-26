@@ -263,7 +263,7 @@ func (i *Instance) restoreOrRevive(tmuxSession *tmux.TmuxSession) error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve env for revived session: %w", err)
 	}
-	if err := tmuxSession.Start(i.WorkingDir(), env); err != nil {
+	if err := tmuxSession.StartResuming(i.WorkingDir(), env); err != nil {
 		return fmt.Errorf("failed to revive session: %w", err)
 	}
 	return nil
@@ -722,16 +722,26 @@ func (i *Instance) Resume() error {
 		return fmt.Errorf("cannot resume: branch is checked out, please switch to a different branch")
 	}
 
-	// Setup git worktree
-	if err := i.gitWorktree.Setup(); err != nil {
-		log.ErrorLog.Print(err)
-		return fmt.Errorf("failed to setup git worktree: %w", err)
-	}
-
-	env, err := i.resolveEnv()
+	// Pause removes the worktree, so resuming normally recreates it. When it is
+	// still on disk — a session paused because its tmux could not be revived, or
+	// one paused while the directory survived — Setup's force-remove-and-re-add
+	// would discard every uncommitted change sitting in it.
+	valid, err := i.gitWorktree.IsValidWorktree()
 	if err != nil {
 		log.ErrorLog.Print(err)
-		return fmt.Errorf("failed to resolve env: %w", err)
+		return fmt.Errorf("failed to check worktree: %w", err)
+	}
+	if !valid {
+		if err := i.gitWorktree.Setup(); err != nil {
+			log.ErrorLog.Print(err)
+			return fmt.Errorf("failed to setup git worktree: %w", err)
+		}
+	}
+
+	env, envErr := i.resolveEnv()
+	if envErr != nil {
+		log.ErrorLog.Print(envErr)
+		return fmt.Errorf("failed to resolve env: %w", envErr)
 	}
 
 	// Check if tmux session still exists from pause, otherwise create new one
