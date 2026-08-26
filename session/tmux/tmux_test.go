@@ -12,6 +12,7 @@ import (
 
 	"claude-squad/cmd/cmd_test"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,4 +90,41 @@ func TestStartTmuxSession(t *testing.T) {
 	// File should be open
 	_, err = ptyFactory.files[1].Stat()
 	require.NoError(t, err)
+}
+
+// attach-session runs inside the PTY, so its failure never reaches
+// ptyFactory.Start — that only reports whether the process could be spawned.
+// Restore therefore has to check for itself, or a session that is gone restores
+// "successfully" and every later capture fails instead.
+func TestRestore_FailsWhenSessionIsGone(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("gone", "claude", "", ptyFactory, cmd_test.MockCmdExec{
+		RunFunc:    func(*exec.Cmd) error { return fmt.Errorf("no such session") },
+		OutputFunc: func(*exec.Cmd) ([]byte, error) { return []byte(""), nil },
+	})
+
+	err := session.Restore()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), session.sanitizedName, "the error must name the session")
+	assert.Empty(t, ptyFactory.cmds, "no PTY should be spawned for a session that is not there")
+}
+
+// "error capturing pane content: exit status 1" says nothing about which session
+// failed or why, which is undiagnosable across a list of sessions.
+func TestCapturePaneContent_ErrorNamesSessionAndQuotesStderr(t *testing.T) {
+	session := newTmuxSession("noisy", "claude", "", NewMockPtyFactory(t), cmd_test.MockCmdExec{
+		RunFunc: func(*exec.Cmd) error { return nil },
+		OutputFunc: func(*exec.Cmd) ([]byte, error) {
+			// Shape of what exec.Cmd.Output returns for a failed tmux call.
+			return nil, &exec.ExitError{
+				ProcessState: &os.ProcessState{},
+				Stderr:       []byte("can't find pane: claudesquad_noisy\n"),
+			}
+		},
+	})
+
+	_, err := session.CapturePaneContent()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claudesquad_noisy")
+	assert.Contains(t, err.Error(), "can't find pane", "tmux's own stderr is the diagnosis")
 }

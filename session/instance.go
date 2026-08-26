@@ -167,10 +167,15 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	if instance.Paused() {
 		instance.started = true
 		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program, instance.WorkspaceID)
-	} else {
-		if err := instance.Start(false); err != nil {
-			return nil, err
-		}
+	} else if err := instance.Start(false); err != nil {
+		// LoadInstances turns an error here into a fatal exit, so one session with
+		// a missing worktree would leave no way to launch the app and delete the
+		// row. Paused is the honest state — started, no live tmux — and r retries
+		// the recreate.
+		log.WarningLog.Printf("could not restore session %q, marking it paused: %v", instance.Title, err)
+		instance.Status = Paused
+		instance.started = true
+		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program, instance.WorkspaceID)
 	}
 
 	return instance, nil
@@ -238,6 +243,32 @@ func (i *Instance) SetStatus(status Status) {
 	i.Status = status
 }
 
+// restoreOrRevive reattaches to the instance's tmux session, or starts a fresh
+// one in the existing worktree when that session is gone. A tmux server that
+// died — a reboot, a crash, an external kill — leaves the worktree and branch
+// intact, and reattaching to nothing left the instance marked Running while
+// every capture failed for the rest of the process's life.
+//
+// It deliberately does not touch the worktree. Resume's teardown-and-recreate
+// would discard the uncommitted work still sitting in it.
+func (i *Instance) restoreOrRevive(tmuxSession *tmux.TmuxSession) error {
+	if tmuxSession.DoesSessionExist() {
+		if err := tmuxSession.Restore(); err != nil {
+			return fmt.Errorf("failed to restore existing session: %w", err)
+		}
+		return nil
+	}
+
+	env, err := i.resolveEnv()
+	if err != nil {
+		return fmt.Errorf("failed to resolve env for revived session: %w", err)
+	}
+	if err := tmuxSession.Start(i.WorkingDir(), env); err != nil {
+		return fmt.Errorf("failed to revive session: %w", err)
+	}
+	return nil
+}
+
 // SetSelectedBranch sets the branch to use when starting the instance.
 func (i *Instance) SetSelectedBranch(branch string) {
 	i.selectedBranch = branch
@@ -298,6 +329,19 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	}
 	i.tmuxSession = tmuxSession
 
+	if !firstTimeSetup {
+		// Deliberately ahead of the cleanup defer below. That defer calls Kill,
+		// which removes the worktree and deletes its branch — the right rollback
+		// for a session this call half-created, and catastrophic for a restore,
+		// where the worktree and its uncommitted work predate this process.
+		if err := i.restoreOrRevive(tmuxSession); err != nil {
+			return err
+		}
+		i.started = true
+		i.SetStatus(Running)
+		return nil
+	}
+
 	if firstTimeSetup && !i.InPlace {
 		if i.selectedBranch != "" {
 			gitWorktree, err := git.NewGitWorktreeFromBranch(i.Path, i.selectedBranch, i.Title, i.WorkspaceID)
@@ -339,13 +383,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 	}()
 
-	if !firstTimeSetup {
-		// Reuse existing session
-		if err := tmuxSession.Restore(); err != nil {
-			setupErr = fmt.Errorf("failed to restore existing session: %w", err)
-			return setupErr
-		}
-	} else if i.InPlace {
+	if i.InPlace {
 		log.WarningLog.Printf("post-worktree hook skipped for in-place instance %s: no git worktree", i.Title)
 
 		env, err := i.resolveEnv()

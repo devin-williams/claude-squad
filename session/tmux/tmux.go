@@ -203,6 +203,14 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 
 // Restore attaches to an existing session and restores the window size
 func (t *TmuxSession) Restore() error {
+	// attach-session runs *inside* the PTY, so its failure never reaches
+	// ptyFactory.Start — that only reports whether the process could be spawned.
+	// Without this check, restoring a session that no longer exists reports
+	// success and every later capture fails instead, forever.
+	if !t.DoesSessionExist() {
+		return fmt.Errorf("tmux session %q does not exist", t.sanitizedName)
+	}
+
 	ptmx, err := t.ptyFactory.Start(exec.Command("tmux", "attach-session", "-t", t.sanitizedName))
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
@@ -211,6 +219,10 @@ func (t *TmuxSession) Restore() error {
 	t.monitor = newStatusMonitor()
 	return nil
 }
+
+// A session that has gone away fails on every poll, which buried the log under
+// thousands of identical lines.
+var statusMonitorLogThrottle = log.NewEvery(30 * time.Second)
 
 type statusMonitor struct {
 	// Store hashes to save memory.
@@ -268,7 +280,9 @@ func (t *TmuxSession) ExitCopyMode() error {
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 	content, err := t.CapturePaneContent()
 	if err != nil {
-		log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
+		if statusMonitorLogThrottle.ShouldLog() {
+			log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
+		}
 		return false, false
 	}
 
@@ -491,13 +505,25 @@ func (t *TmuxSession) DoesSessionExist() bool {
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
+// captureErr names the session and quotes tmux's own stderr. A bare
+// "exit status 1" is indistinguishable from a dozen other failures and says
+// nothing about which session is missing.
+func (t *TmuxSession) captureErr(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return fmt.Errorf("error capturing pane content for %q: %v: %s",
+			t.sanitizedName, err, strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return fmt.Errorf("error capturing pane content for %q: %v", t.sanitizedName, err)
+}
+
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
 	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("error capturing pane content: %v", err)
+		return "", t.captureErr(err)
 	}
 	return string(output), nil
 }
@@ -510,7 +536,7 @@ func (t *TmuxSession) CapturePaneScreen() (string, error) {
 	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("error capturing pane content: %v", err)
+		return "", t.captureErr(err)
 	}
 	return string(output), nil
 }

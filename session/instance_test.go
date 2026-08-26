@@ -216,3 +216,146 @@ func TestKill_ReportsFailureWhenSessionIsAlive(t *testing.T) {
 	require.Error(t, err, "a live session that fails to close must still be reported")
 	assert.Contains(t, err.Error(), "failed to close tmux session")
 }
+
+// deadSessionExec is a tmux double whose session is gone: has-session always
+// fails, so both the existence check and any kill report "no such session".
+func deadSessionExec() cmd_test.MockCmdExec {
+	return cmd_test.MockCmdExec{
+		RunFunc: func(c *exec.Cmd) error {
+			if strings.Contains(c.String(), "has-session") {
+				return fmt.Errorf("no such session")
+			}
+			return nil
+		},
+		OutputFunc: func(*exec.Cmd) ([]byte, error) { return []byte(""), nil },
+	}
+}
+
+// A tmux server that dies (reboot, crash, external kill) leaves the worktree and
+// branch intact. Reattaching to nothing used to "succeed", leaving the instance
+// marked Running while every capture failed for the rest of the process's life —
+// which is what filled the error box with "exit status 1".
+func TestStart_ReviveRecreatesSessionWhenTmuxIsGone(t *testing.T) {
+	inst, _ := startedTestInstance(t, "revive-me")
+
+	wt, err := inst.GetGitWorktree()
+	require.NoError(t, err)
+	worktreePath := wt.GetWorktreePath()
+
+	h := &reviveHarness{t: t}
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("revive-me", "echo", "", h, h.exec()))
+
+	require.NoError(t, inst.Start(false), "restoring a session whose tmux is gone must recover, not fail")
+
+	var issued []string
+	for _, c := range h.cmds {
+		issued = append(issued, c.String())
+	}
+	// tmux.Start creates the session and then attaches to it, so the attach that
+	// follows is expected. What matters is that a new-session came first rather
+	// than an attach to a session that is not there.
+	require.NotEmpty(t, issued)
+	assert.Contains(t, issued[0], "new-session", "a missing session has to be recreated")
+
+	assert.Equal(t, Running, inst.Status)
+	_, statErr := os.Stat(worktreePath)
+	assert.NoError(t, statErr, "reviving must not disturb the worktree")
+}
+
+// The destructive case. Start's failure path calls Kill, which removes the
+// worktree and deletes its branch — correct rollback for a session this call
+// half-created, catastrophic for a restore, where the worktree holds work that
+// predates the process.
+func TestStart_FailedReviveLeavesWorktreeAndBranchIntact(t *testing.T) {
+	inst, repoPath := startedTestInstance(t, "revive-fails")
+
+	wt, err := inst.GetGitWorktree()
+	require.NoError(t, err)
+	worktreePath := wt.GetWorktreePath()
+	branch := wt.GetBranchName()
+
+	canary := filepath.Join(worktreePath, "uncommitted.txt")
+	require.NoError(t, os.WriteFile(canary, []byte("work in progress\n"), 0644))
+
+	// has-session fails (gone) and starting a replacement fails too.
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("revive-fails", "echo", "",
+		&failingPtyFactory{}, deadSessionExec()))
+
+	require.Error(t, inst.Start(false))
+
+	_, statErr := os.Stat(worktreePath)
+	assert.NoError(t, statErr, "a failed revive must not remove the worktree")
+	assert.FileExists(t, canary, "a failed revive must not discard uncommitted work")
+
+	out, err := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "refs/heads/"+branch).CombinedOutput()
+	assert.NoError(t, err, "a failed revive must not delete the branch: %s", out)
+}
+
+// reviveHarness models a tmux server whose session is gone: has-session fails
+// until a new-session is spawned through the PTY and succeeds afterwards, which
+// is what tmux.Start's own readiness poll observes.
+type reviveHarness struct {
+	t       *testing.T
+	started bool
+	cmds    []*exec.Cmd
+}
+
+func (h *reviveHarness) Start(c *exec.Cmd) (*os.File, error) {
+	h.cmds = append(h.cmds, c)
+	if strings.Contains(c.String(), "new-session") {
+		h.started = true
+	}
+	return os.CreateTemp(h.t.TempDir(), "pty")
+}
+
+func (h *reviveHarness) Close() {}
+
+func (h *reviveHarness) exec() cmd_test.MockCmdExec {
+	return cmd_test.MockCmdExec{
+		RunFunc: func(c *exec.Cmd) error {
+			if strings.Contains(c.String(), "has-session") && !h.started {
+				return fmt.Errorf("no such session")
+			}
+			return nil
+		},
+		OutputFunc: func(*exec.Cmd) ([]byte, error) { return []byte(""), nil },
+	}
+}
+
+type failingPtyFactory struct{}
+
+func (failingPtyFactory) Start(*exec.Cmd) (*os.File, error) {
+	return nil, fmt.Errorf("pty unavailable")
+}
+func (failingPtyFactory) Close() {}
+
+// LoadInstances turns any FromInstanceData error into a fatal exit, so one
+// unrecoverable session would leave no way to launch the app and delete the row.
+func TestFromInstanceData_UnrecoverableSessionBecomesPausedNotFatal(t *testing.T) {
+	log.Initialize(false)
+	t.Cleanup(log.Close)
+	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
+
+	// A worktree path that was never created: neither attaching nor recreating
+	// the session can work.
+	missing := filepath.Join(t.TempDir(), "worktree-is-gone")
+
+	inst, err := FromInstanceData(InstanceData{
+		Title:   "gone",
+		Path:    t.TempDir(),
+		Branch:  "some/branch",
+		Status:  Running,
+		Program: "echo",
+		Worktree: GitWorktreeData{
+			RepoPath:     filepath.Join(t.TempDir(), "repo-is-gone"),
+			WorktreePath: missing,
+			SessionName:  "gone",
+			BranchName:   "some/branch",
+		},
+	})
+
+	require.NoError(t, err, "one broken session must not stop every session from loading")
+	require.NotNil(t, inst)
+	assert.Equal(t, Paused, inst.Status, "paused is the honest state: started, no live tmux")
+	assert.True(t, inst.Started(), "r must be able to retry the recreate")
+}
