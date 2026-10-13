@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -60,7 +61,7 @@ func cursorResumeArgs(home, workDir string) string {
 	var newestID string
 	var newestAt int64 = -1
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || !safeChatID.MatchString(e.Name()) {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, e.Name(), "meta.json"))
@@ -83,6 +84,9 @@ func cursorResumeArgs(home, workDir string) string {
 	}
 	return "--resume " + newestID
 }
+
+// The id lands in a command line tmux hands to a shell, so only plain id characters are trusted.
+var safeChatID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // cursorChatDir is the directory cursor-agent stores a working directory's chats
 // under: the md5 of the absolute path. Verified against a live ~/.cursor/chats.

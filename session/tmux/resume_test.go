@@ -118,3 +118,13 @@ func TestResumeProgram_LeavesUnknownHarnessesAndExplicitFlagsAlone(t *testing.T)
 	assert.Equal(t, "some-other-cli", resumeProgram("some-other-cli", workDir),
 		"an unknown harness has no conversation store to consult")
 }
+
+func TestResumeProgram_CursorIgnoresChatIDsThatAreNotPlainIDs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "wt")
+
+	writeCursorChat(t, home, workDir, "x; touch pwned", true, 9_000)
+	writeCursorChat(t, home, workDir, "real-chat", true, 1_000)
+	assert.Equal(t, "cursor-agent --resume real-chat", resumeProgram("cursor-agent", workDir))
+}
