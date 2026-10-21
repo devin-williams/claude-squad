@@ -6,6 +6,7 @@ import (
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
 	"path/filepath"
+	"regexp"
 
 	"fmt"
 	"os"
@@ -28,6 +29,8 @@ const (
 	// Paused is if the instance is paused (worktree removed but branch preserved).
 	Paused
 )
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
 
 // Instance is a running instance of claude code.
 type Instance struct {
@@ -852,12 +855,92 @@ func (i *Instance) SendPrompt(prompt string) error {
 	}
 
 	// Brief pause to prevent carriage return from being interpreted as newline
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	if err := i.tmuxSession.TapEnter(); err != nil {
 		return fmt.Errorf("error tapping enter: %w", err)
 	}
 
 	return nil
+}
+
+// WaitUntilReady blocks until the program's UI has stopped changing, or the wait times out.
+func (i *Instance) WaitUntilReady() error {
+	const (
+		pollInterval = 250 * time.Millisecond
+		maxWait      = 30 * time.Second
+		stablePolls  = 4
+	)
+
+	var prev string
+	stable := 0
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+		if !i.started || i.tmuxSession == nil || i.Status == Paused {
+			return fmt.Errorf("instance stopped before prompt could be sent")
+		}
+		if i.CheckAndHandleTrustPrompt() {
+			stable = 0
+			continue
+		}
+		content, err := i.tmuxSession.CapturePaneContent()
+		if err != nil {
+			return err
+		}
+		if i.inputBoxDrawn(content) && content == prev {
+			stable++
+		} else {
+			stable = 0
+		}
+		prev = content
+		if stable >= stablePolls {
+			return nil
+		}
+	}
+	log.WarningLog.Printf("timed out waiting for %s to become ready; sending prompt anyway", i.Title)
+	return nil
+}
+
+func (i *Instance) inputBoxDrawn(content string) bool {
+	if strings.HasSuffix(i.Program, tmux.ProgramClaude) {
+		return strings.Contains(content, "❯")
+	}
+	return strings.TrimSpace(content) != ""
+}
+
+// PromptPending reports whether the prompt text is still sitting unsent in the input box.
+func (i *Instance) PromptPending(prompt string) bool {
+	if !i.started || i.tmuxSession == nil {
+		return false
+	}
+	lines := strings.Split(strings.TrimSpace(prompt), "\n")
+	needle := []rune(strings.TrimSpace(lines[0]))
+	if len(needle) > 20 {
+		needle = needle[:20]
+	}
+	if len(needle) == 0 {
+		return false
+	}
+	content, err := i.tmuxSession.CapturePaneContent()
+	if err != nil {
+		return false
+	}
+	content = ansiEscape.ReplaceAllString(content, "")
+	all := strings.Split(content, "\n")
+	for n := len(all) - 1; n >= 0; n-- {
+		if strings.Contains(all[n], "❯") {
+			return strings.Contains(all[n], string(needle))
+		}
+	}
+	return false
+}
+
+// SubmitPrompt presses Enter in the session.
+func (i *Instance) SubmitPrompt() error {
+	if !i.started || i.tmuxSession == nil {
+		return fmt.Errorf("instance not started")
+	}
+	return i.tmuxSession.TapEnter()
 }
 
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history

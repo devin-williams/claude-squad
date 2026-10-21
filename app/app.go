@@ -600,18 +600,38 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.menu.SetState(ui.StatePrompt)
 			m.textInputOverlay = m.newPromptOverlay()
 		} else {
-			// If instance has a prompt (set from Shift+N flow), send it now
-			if msg.instance.Prompt != "" {
-				if err := msg.instance.SendPrompt(msg.instance.Prompt); err != nil {
-					log.ErrorLog.Printf("failed to send prompt: %v", err)
-				}
-				msg.instance.Prompt = ""
-			}
 			m.menu.SetState(ui.StateDefault)
 			m.showHelpScreen(helpStart(msg.instance), nil)
+			if prompt := msg.instance.Prompt; prompt != "" {
+				msg.instance.Prompt = ""
+				inst := msg.instance
+				sendCmd := func() tea.Msg {
+					return promptReadyMsg{instance: inst, prompt: prompt, err: inst.WaitUntilReady()}
+				}
+				return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), sendCmd)
+			}
 		}
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case promptReadyMsg:
+		if msg.err != nil {
+			return m, m.handleError(msg.err)
+		}
+		if msg.instance.Paused() {
+			return m, nil
+		}
+		if err := msg.instance.SendPrompt(msg.prompt); err != nil {
+			return m, m.handleError(err)
+		}
+		return m, verifyPromptCmd(msg.instance, msg.prompt, 1)
+	case promptVerifyMsg:
+		if !msg.pending || msg.instance.Paused() || msg.attempt > maxPromptSubmitRetries {
+			return m, nil
+		}
+		if err := msg.instance.SubmitPrompt(); err != nil {
+			return m, m.handleError(err)
+		}
+		return m, verifyPromptCmd(msg.instance, msg.prompt, msg.attempt+1)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -1292,6 +1312,28 @@ type hideErrMsg struct{}
 type previewTickMsg struct{}
 
 type instanceChangedMsg struct{}
+
+const maxPromptSubmitRetries = 3
+
+type promptVerifyMsg struct {
+	instance *session.Instance
+	prompt   string
+	attempt  int
+	pending  bool
+}
+
+func verifyPromptCmd(inst *session.Instance, prompt string, attempt int) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(700 * time.Millisecond)
+		return promptVerifyMsg{instance: inst, prompt: prompt, attempt: attempt, pending: inst.PromptPending(prompt)}
+	}
+}
+
+type promptReadyMsg struct {
+	instance *session.Instance
+	prompt   string
+	err      error
+}
 
 type instanceStartedMsg struct {
 	instance        *session.Instance
